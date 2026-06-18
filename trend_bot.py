@@ -114,6 +114,3 @@ if __name__ == "__main__":
 
 # In[12]:
 
-
-get_ipython().system('pip install python-dotenv')
-
