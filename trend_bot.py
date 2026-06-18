@@ -4,7 +4,6 @@
 # In[9]:
 
 
-get_ipython().system('pip install yfinance pandas requests')
 
 
 # In[10]:
