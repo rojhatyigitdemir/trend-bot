@@ -89,17 +89,3 @@ if response.status_code == 200:
 else:
     print(f"❌ Hata: {response.text}")
 
-# --- ÇALIŞTIRMA ---
-if __name__ == "__main__":
-    # 1. Analizi yap ve raporu oluştur
-    final_report = analyze_trends()
-
-    # 2. Ekrana yazdır (Notebook içinde görmek için)
-    print(final_report)
-
-    # 3. Telefona gönder!pip install python-dotenv
-    send_telegram_message(final_report)
-
-
-# In[12]:
-
