@@ -2,7 +2,6 @@ name: Gunluk Trend Analizi
 
 on:
   schedule:
-    # Hafta içi her gün (Pazartesi-Cuma) UTC saatiyle 06:00'da çalışır
     - cron: '0 6 * * 1-5'
   workflow_dispatch:
 
@@ -12,12 +11,12 @@ jobs:
 
     steps:
       - name: Kodlari Cek
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Python Kur
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Kutuphaneleri Yukle
         run: |
