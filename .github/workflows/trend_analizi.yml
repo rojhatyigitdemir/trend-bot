@@ -5,6 +5,9 @@ on:
     - cron: '0 6 * * 1-5'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,3 +32,11 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -u trend_bot.py
+
+      - name: Sinyal Gecmisini Commitle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add signals_history.csv
+          git diff --staged --quiet || git commit -m "chore: sinyal gecmisi guncellendi [skip ci]"
+          git push
