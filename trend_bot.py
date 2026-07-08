@@ -10,11 +10,11 @@
 
 
 import pandas as pd
-import pandas as pd
 import yfinance as yf
 import warnings
 import time
 import os
+import datetime as dt
 import requests
 from google import genai
 from google.genai import types
@@ -32,6 +32,17 @@ MODEL_ID = 'gemini-3.5-flash'
 
 # Sabit Çekirdek Varlıklar (Emlak, Tahvil, Kripto, Altın, Petrol)
 CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL"]
+
+# --- SINYAL GECMISI AYARLARI (Madde 2) ---
+HISTORY_FILE = "signals_history.csv"
+HISTORY_COLUMNS = [
+    "run_date", "symbol", "category", "price", "trend",
+    "momentum_3m", "ai_signal",
+    "eval_date_1m", "realized_return_1m",
+    "eval_date_3m", "realized_return_3m",
+]
+EVAL_DAYS_1M = 30
+EVAL_DAYS_3M = 90
 
 def read_portfolio(file_name="portfolio.csv"):
     try:
@@ -131,10 +142,59 @@ def ai_risk_and_action_analysis(symbol, trend, momentum_3m, volume_comment, is_c
     except Exception:
         return "Monitor Technical Support Level"
 
-def analyze_asset_data(symbol):
-    """Tekil bir varlığın momentum ve hacim hesaplamalarını yapar."""
+def batch_download_data(symbols, period="2y", interval="1mo"):
+    """
+    Tum sembolleri TEK bir yfinance istegiyle ceker (rate-limit dostu, hizli).
+    Basarisiz olursa None doner; cagiran taraf bunu tekil indirmeye (eski yontem) dusurur.
+    Bu fonksiyon SADECE veri cekme seklini degistirir; hesaplama mantigina dokunmaz.
+    """
     try:
-        data = yf.download(symbol, period="2y", interval="1mo", progress=False)
+        data = yf.download(
+            tickers=symbols,
+            period=period,
+            interval=interval,
+            group_by='ticker',
+            threads=True,
+            progress=False,
+        )
+        if data is None or data.empty:
+            return None
+        return data
+    except Exception as e:
+        print(f"   [Uyari] Toplu indirme basarisiz oldu, tekil indirmeye dusuluyor. Detay: {e}")
+        return None
+
+
+def analyze_asset_data(symbol, batch_data=None):
+    """Tekil bir varlığın momentum ve hacim hesaplamalarını yapar.
+
+    batch_data verilirse (toplu indirmeden gelen tablo), onceden indirilmis veriyi kullanir.
+    batch_data icinde sembol bulunamazsa veya bos gelirse, GUVENLIK AGI olarak
+    orijinal tekil yf.download cagrisina otomatik olarak geri doner.
+    """
+    try:
+        data = None
+
+        if batch_data is not None:
+            try:
+                if isinstance(batch_data.columns, pd.MultiIndex):
+                    top_level = batch_data.columns.get_level_values(0)
+                    if symbol in top_level:
+                        candidate = batch_data[symbol].dropna(how='all')
+                        if not candidate.empty:
+                            data = candidate
+                else:
+                    # Tek sembol icin toplu indirme de duz kolonlu donebilir
+                    candidate = batch_data.dropna(how='all')
+                    if not candidate.empty:
+                        data = candidate
+            except Exception:
+                data = None
+
+        if data is None:
+            # GUVENLIK AGI: toplu veride sembol yoksa/bozuksa eski yonteme (tekil indirme) don
+            data = yf.download(symbol, period="2y", interval="1mo", progress=False)
+
         if data.empty or len(data) < 10:
             return None
         
@@ -180,10 +240,15 @@ def analyze_asset_data(symbol):
 def dual_momentum_and_risk_analysis(symbols):
     results = []
     print(f"AlphaGuard AI Initiating...\nStage 1: Calculating Data for {len(symbols)} Watchlist Assets and Core Portfolio...\n")
+
+    # --- Performans: watchlist + core varliklar icin veriyi TEK istekte cek ---
+    all_symbols = list(dict.fromkeys(list(symbols) + CORE_ASSETS))  # sirali, tekrarsiz birlesim
+    print(f"   [Toplu Indirme] {len(all_symbols)} sembol icin veri tek istekte cekiliyor...")
+    batch_data = batch_download_data(all_symbols)
     
     # 1. Tüm izleme listesini işle
     for symbol in symbols:
-        asset_data = analyze_asset_data(symbol)
+        asset_data = analyze_asset_data(symbol, batch_data=batch_data)
         if asset_data:
             results.append(asset_data)
             
@@ -197,7 +262,7 @@ def dual_momentum_and_risk_analysis(symbols):
     # 3. Çekirdek (Core) Varlıkları Hesapla
     core_results = []
     for symbol in CORE_ASSETS:
-        asset_data = analyze_asset_data(symbol)
+        asset_data = analyze_asset_data(symbol, batch_data=batch_data)
         if asset_data:
             asset_data['Category'] = 'Core Foundation'
             core_results.append(asset_data)
@@ -234,6 +299,122 @@ def dual_momentum_and_risk_analysis(symbols):
     df_display = final_analysis_list.drop(columns=["Volume Status"])
     return df_display, macro_note
 
+def load_signal_history():
+    """signals_history.csv varsa okur, yoksa boş bir tablo döner."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            df = pd.read_csv(
+                HISTORY_FILE,
+                parse_dates=["run_date", "eval_date_1m", "eval_date_3m"],
+            )
+            for col in HISTORY_COLUMNS:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            return df[HISTORY_COLUMNS]
+        except Exception as e:
+            print(f"[Uyari] signals_history.csv okunamadi, sifirdan olusturuluyor. Detay: {e}")
+    return pd.DataFrame(columns=HISTORY_COLUMNS)
+
+
+def get_latest_price(symbol):
+    """Bir sembolun en guncel kapanis fiyatini ceker (gerceklesen getiri hesabi icin)."""
+    try:
+        data = yf.Ticker(symbol).history(period="5d")
+        if not data.empty:
+            return float(data['Close'].iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
+def update_realized_returns(history_df):
+    """Suresi dolan (1 ay / 3 ay) gecmis sinyaller icin gerceklesen getiriyi hesaplar."""
+    if history_df.empty:
+        return history_df
+
+    today = pd.Timestamp(dt.date.today())
+    price_cache = {}
+
+    def _price_for(symbol):
+        if symbol not in price_cache:
+            price_cache[symbol] = get_latest_price(symbol)
+        return price_cache[symbol]
+
+    for idx, row in history_df.iterrows():
+        run_date = row["run_date"]
+        if pd.isna(run_date):
+            continue
+        days_passed = (today - run_date).days
+        entry_price = row["price"]
+
+        needs_1m = days_passed >= EVAL_DAYS_1M and pd.isna(row.get("realized_return_1m"))
+        needs_3m = days_passed >= EVAL_DAYS_3M and pd.isna(row.get("realized_return_3m"))
+
+        if not (needs_1m or needs_3m):
+            continue
+
+        current_price = _price_for(row["symbol"])
+        if current_price is None or not entry_price:
+            continue
+
+        realized_return = round(((current_price - entry_price) / entry_price) * 100, 2)
+
+        if needs_1m:
+            history_df.at[idx, "realized_return_1m"] = realized_return
+            history_df.at[idx, "eval_date_1m"] = today
+        if needs_3m:
+            history_df.at[idx, "realized_return_3m"] = realized_return
+            history_df.at[idx, "eval_date_3m"] = today
+
+    return history_df
+
+
+def append_new_signals(history_df, final_analysis_list):
+    """Bugunku sinyalleri gecmis tabloya yeni satirlar olarak ekler."""
+    today = pd.Timestamp(dt.date.today())
+    new_rows = []
+    for _, row in final_analysis_list.iterrows():
+        new_rows.append({
+            "run_date": today,
+            "symbol": row["Asset"],
+            "category": row["Category"],
+            "price": row["Price ($)"],
+            "trend": row["Absolute Trend"],
+            "momentum_3m": row["3M Momentum (%)"],
+            "ai_signal": row["AI Action & Risk Warning"],
+            "eval_date_1m": pd.NaT,
+            "realized_return_1m": pd.NA,
+            "eval_date_3m": pd.NaT,
+            "realized_return_3m": pd.NA,
+        })
+    new_df = pd.DataFrame(new_rows)
+    return pd.concat([history_df, new_df], ignore_index=True)
+
+
+def generate_accuracy_summary(history_df):
+    """1 aylik degerlendirmesi tamamlanmis sinyaller icin kisa bir performans ozeti uretir."""
+    evaluated = history_df.dropna(subset=["realized_return_1m"])
+    if evaluated.empty:
+        return "Henuz 1 ayi dolmus/degerlendirilmis sinyal yok (ilk ay boyunca bu bolum bos kalacak)."
+
+    avg_return = evaluated["realized_return_1m"].mean()
+    hit_rate = (evaluated["realized_return_1m"] > 0).mean() * 100
+    n = len(evaluated)
+
+    sell_mask = evaluated["ai_signal"].str.contains("SELL|TAKE PROFIT", case=False, na=False)
+    sell_signals = evaluated[sell_mask]
+    sell_avg = sell_signals["realized_return_1m"].mean() if not sell_signals.empty else None
+
+    summary = (
+        f"Degerlendirilen Sinyal Sayisi (1A): {n} | "
+        f"Ortalama Gerceklesen Getiri: {avg_return:.2f}% | "
+        f"Pozitif Getiri Orani: {hit_rate:.1f}%"
+    )
+    if sell_avg is not None:
+        summary += f" | SELL/TAKE PROFIT sinyali sonrasi ort. getiri: {sell_avg:.2f}% ({len(sell_signals)} sinyal)"
+    return summary
+
+
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram configuration missing.")
@@ -263,7 +444,15 @@ if __name__ == "__main__":
         
         final_report, macro_note = dual_momentum_and_risk_analysis(watchlist)
         pd.set_option('display.max_colwidth', None)
-        
+
+        # --- Sinyal Gecmisi: onceki sinyalleri degerlendir, bugunkuleri ekle, kaydet ---
+        print("\nStage 3: Sinyal gecmisi guncelleniyor (gerceklesen getiriler hesaplaniyor)...\n")
+        history_df = load_signal_history()
+        history_df = update_realized_returns(history_df)
+        history_df = append_new_signals(history_df, final_report)  # final_report 'Category' kolonunu icerir
+        history_df.to_csv(HISTORY_FILE, index=False)
+        accuracy_summary = generate_accuracy_summary(history_df)
+
         report_text = "=" * 65 + "\n"
         report_text += "🌍 ALPHAGUARD GLOBAL STRATEGIC TACTICAL NOTE\n"
         report_text += "=" * 65 + "\n"
@@ -272,6 +461,10 @@ if __name__ == "__main__":
         report_text += "🏛️ ALPHAGUARD CORE & SATELLITE PORTFOLIO REPORT\n"
         report_text += "=" * 65 + "\n"
         report_text += final_report.to_string(index=False)
+        report_text += "\n\n" + "=" * 65 + "\n"
+        report_text += "📊 GECMIS SINYAL PERFORMANSI (1 Aylik)\n"
+        report_text += "=" * 65 + "\n"
+        report_text += accuracy_summary
         
         print(report_text)
         send_telegram_message(report_text)
