@@ -1,4 +1,4 @@
 pandas
 yfinance
-google-generativeai
+google-genai
 requests
