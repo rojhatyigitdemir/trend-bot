@@ -52,21 +52,25 @@ def read_portfolio(file_name="portfolio.csv"):
         print(f"Error: Could not read {file_name}. Detail: {e}")
         return []
 
-def secure_ai_query(prompt, is_json=False):
-    try:
-        config_args = {"temperature": 0.2}
-        if is_json:
-            config_args["response_mime_type"] = "application/json"
-            
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-            config=types.GenerateContentConfig(**config_args)
-        )
-        return response.text.strip()
-    except Exception as e:
-        print(f"API Error: {e}")
-        return "{}" if is_json else "AI Limit/Connection Error"
+def secure_ai_query(prompt, is_json=False, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            config_args = {"temperature": 0.2}
+            if is_json:
+                config_args["response_mime_type"] = "application/json"
+                
+            response = client.models.generate_content(
+                model=MODEL_ID,
+                contents=prompt,
+                config=types.GenerateContentConfig(**config_args)
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"   [API] Deneme {attempt+1} basarisiz. (Google Sunucusu Mesgul). Hata: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(12) # Google'a nefes almasi icin 12 saniye ver ve tekrar dene
+            else:
+                return "{}" if is_json else "AI Limit/Connection Error"
 
 def global_macro_intelligence():
     print("🌍 Analyzing Global Macroeconomics, Geopolitics, and Crypto Agenda...")
