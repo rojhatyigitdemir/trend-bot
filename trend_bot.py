@@ -30,6 +30,9 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 client = genai.Client(api_key=API_KEY)
 MODEL_ID = 'gemini-3.5-flash'
 
+# ====================================================================
+# ÇEKİRDEK PORTFÖY (CORE ASSETS)
+# ====================================================================
 CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL"]
 
 # --- SINYAL GECMISI AYARLARI ---
@@ -56,7 +59,6 @@ def read_portfolio(file_name="portfolio.csv"):
         return []
 
 def secure_ai_query(prompt, is_json=False):
-    """Yeni nesil SDK, JSON formati ve hiz limitlerine karsi zirhli."""
     try:
         config_args = {"temperature": 0.2}
         if is_json:
@@ -340,16 +342,16 @@ def generate_accuracy_summary(history_df):
     return summary
 
 def send_telegram_message(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    formatted_message = f"```\n{message}\n```"
     
+    formatted_message = f"```\n{message}\n```"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID, 
         "text": formatted_message, 
         "parse_mode": "MarkdownV2"
     }
-    
     try:
         requests.post(url, json=payload)
     except Exception as e:
@@ -357,4 +359,22 @@ def send_telegram_message(message):
 
 if __name__ == "__main__":
     watchlist = read_portfolio("portfolio.csv")
+    if watchlist:
+        watchlist = [s for s in watchlist if s not in CORE_ASSETS]
+        
+        final_report, macro_note = dual_momentum_and_risk_analysis(watchlist)
+        pd.set_option('display.max_colwidth', None)
 
+        print("\nStage 3: Sinyal gecmisi guncelleniyor...\n")
+        history_df = load_signal_history()
+        history_df = update_realized_returns(history_df)
+        history_df = append_new_signals(history_df, final_report)
+        history_df.to_csv(HISTORY_FILE, index=False)
+        accuracy_summary = generate_accuracy_summary(history_df)
+
+        report_text = "=" * 65 + "\n🌍 ALPHAGUARD GLOBAL STRATEGIC TACTICAL NOTE\n" + "=" * 65 + f"\n{macro_note}\n\n"
+        report_text += "=" * 65 + "\n🏛️ ALPHAGUARD CORE & SATELLITE PORTFOLIO REPORT\n" + "=" * 65 + "\n" + final_report.to_string(index=False)
+        report_text += "\n\n" + "=" * 65 + "\n📊 GECMIS SINYAL PERFORMANSI (1 Aylik)\n" + "=" * 65 + "\n" + accuracy_summary
+        
+        print(report_text)
+        send_telegram_message(report_text)
