@@ -22,7 +22,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 client = genai.Client(api_key=API_KEY)
-MODEL_ID = 'gemini-3.5-flash'
+MODEL_ID = 'gemini-2.5-flash'
 
 # ====================================================================
 # ÇEKİRDEK PORTFÖY (CORE ASSETS)
