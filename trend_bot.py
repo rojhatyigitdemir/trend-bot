@@ -342,6 +342,19 @@ def generate_accuracy_summary(history_df):
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": f"
-http://googleusercontent.com/immersive_entry_chip/0
+    formatted_message = f"```\n{message}\n```"
+    
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID, 
+        "text": formatted_message, 
+        "parse_mode": "MarkdownV2"
+    }
+    
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Telegram connection error: {e}")
+
+if __name__ == "__main__":
+    watchlist = read_portfolio("portfolio.csv")
 
