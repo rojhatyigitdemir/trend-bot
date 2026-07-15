@@ -340,20 +340,28 @@ def generate_accuracy_summary(history_df):
     return summary
 
 def send_telegram_message(message):
+    print("\n[Telegram] Mesaj gonderimi baslatiliyor...")
+    
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+        print("❌ HATA: Telegram Token veya Chat ID bulunamadi! GitHub Secrets ayarlarini kontrol et.")
         return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    formatted_message = f"```\n{message}\n```"
+    # Markdown formatini iptal ettik (Sade metin - %100 teslimat garantisi)
     payload = {
         "chat_id": TELEGRAM_CHAT_ID, 
-        "text": formatted_message, 
-        "parse_mode": "MarkdownV2"
+        "text": message
     }
+    
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("✅ Rapor Telegram'a basariyla gonderildi!")
+        else:
+            print(f"❌ Telegram API Hatasi: {response.status_code} - {response.text}")
     except Exception as e:
-        print(f"Telegram connection error: {e}")
+        print(f"❌ Telegram baglanti hatasi: {e}")
 
 if __name__ == "__main__":
     watchlist = read_portfolio("portfolio.csv")
