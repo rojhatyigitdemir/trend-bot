@@ -27,7 +27,7 @@ MODEL_ID = 'gemini-2.5-flash'
 # ====================================================================
 # ÇEKİRDEK PORTFÖY (CORE ASSETS)
 # ====================================================================
-CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL"]
+CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "NVDA", "ENA-USD", "ACN", "ZSIL.SW", "BCHE.SW" ]
 
 # --- SINYAL GECMISI AYARLARI ---
 HISTORY_FILE = "signals_history.csv"
