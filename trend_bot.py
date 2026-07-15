@@ -185,7 +185,7 @@ def dual_momentum_and_risk_analysis(symbols):
     
     if not df.empty:
         uptrend_assets = df[df["Absolute Trend"] == "UPTREND 🟢"]
-        top_10_leaders = uptrend_assets.sort_values(by="3M Momentum (%)", ascending=False).head(10).copy()
+        top_10_leaders = uptrend_assets.sort_values(by="3M Momentum (%)", ascending=False).head(15).copy()
     else:
         top_10_leaders = pd.DataFrame()
         
