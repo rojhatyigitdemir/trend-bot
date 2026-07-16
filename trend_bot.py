@@ -1,4 +1,5 @@
 import sys
+# Windows sunucularinda emoji ve ozel karakterlerin (Unicode) cokmemesi icin zorunlu UTF-8 ayari
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -15,17 +16,24 @@ from google.genai import types
 
 warnings.filterwarnings('ignore')
 
-# --- SETTINGS ---
+# ====================================================================
+# --- SETTINGS (AYARLAR) ---
+# ====================================================================
+# GitHub Actions (Production) icin sifreleri tekrar otomatik cekmeye (Secrets) aliyoruz
 API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-client = genai.Client(api_key=API_KEY)
-MODEL_ID = 'gemini-2.5-flash'
+# Eger API Key yoksa kodu durdurmadan uyari ver
+if API_KEY:
+    client = genai.Client(api_key=API_KEY)
+else:
+    client = None
 
-# ====================================================================
+# Kararli (Stable) Model kullanımı
+MODEL_ID = 'gemini-2.5-flash' 
+
 # ÇEKİRDEK PORTFÖY (CORE ASSETS)
-# ====================================================================
 CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "NVDA", "ENA-USD", "ACN", "ZSIL.SW", "BCHE.SW"]
 
 # --- SINYAL GECMISI AYARLARI ---
@@ -52,6 +60,9 @@ def read_portfolio(file_name="portfolio.csv"):
         return []
 
 def secure_ai_query(prompt, is_json=False, max_retries=3):
+    if not client:
+        return "{}" if is_json else "API Key Eksik. AI Degerlendirmesi Yapilamadi."
+        
     for attempt in range(max_retries):
         try:
             config_args = {"temperature": 0.2}
@@ -65,7 +76,7 @@ def secure_ai_query(prompt, is_json=False, max_retries=3):
             )
             return response.text.strip()
         except Exception as e:
-            print(f"   [API] Deneme {attempt+1} basarisiz. (Google Sunucusu Mesgul). Hata: {e}")
+            print(f"   [API] Deneme {attempt+1} basarisiz. (Google Sunucusu Mesgul veya Hata). Hata: {e}")
             if attempt < max_retries - 1:
                 time.sleep(12) # Google'a nefes almasi icin 12 saniye ver ve tekrar dene
             else:
@@ -182,7 +193,7 @@ def dual_momentum_and_risk_analysis(symbols):
             
     df = pd.DataFrame(results)
     
-    # 15 Varlik Secimi Güncellendi
+    # 15 Varlik Secimi
     if not df.empty:
         uptrend_assets = df[df["Absolute Trend"] == "UPTREND 🟢"]
         top_15_leaders = uptrend_assets.sort_values(by="3M Momentum (%)", ascending=False).head(15).copy()
@@ -213,7 +224,7 @@ def dual_momentum_and_risk_analysis(symbols):
     
     batch_serialized_data = ""
     
-    # --- HABER OKUMA DENETİMİ (AUDIT LOG) EKLENDİ ---
+    # --- HABER OKUMA DENETİMİ (AUDIT LOG) ---
     print("\n" + "="*50)
     print("📰 HABER OKUMA DENETIMI (Yapay Zekaya Giden Veri)")
     print("="*50)
@@ -228,14 +239,14 @@ def dual_momentum_and_risk_analysis(symbols):
         except Exception:
             news_text = "No news."
             
-        # Hisselerin o an cekilen haberlerini log ekranina yazdiriyoruz
+        # Çekilen haberleri konsola yazdiriyoruz
         print(f"[{symbol}] Haberleri: {news_text}")
             
         batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 3M Return: {row['3M Momentum (%)']}%, Volume: {row['Volume Status']}, News: {news_text}\n"
 
     print("="*50 + "\n")
 
-    # Prompt icerisindeki "15 assets" kismini dinamik hale getirdik (Cunku cekirdek + uydu varlik sayisi degisebilir)
+    # Prompt icerisindeki asset sayisi dinamik hale getirildi
     batch_prompt = f"""
     You are an elite hedge fund manager. Analyze the following {len(final_analysis_list)} assets simultaneously.
     Assets Dataset:
@@ -302,3 +313,101 @@ def update_realized_returns(history_df):
         needs_3m = days_passed >= EVAL_DAYS_3M and pd.isna(row.get("realized_return_3m"))
 
         if not (needs_1m or needs_3m): continue
+
+        if row["symbol"] not in price_cache:
+            price_cache[row["symbol"]] = get_latest_price(row["symbol"])
+            
+        current_price = price_cache[row["symbol"]]
+        if current_price is None or not entry_price: continue
+
+        realized_return = round(((current_price - entry_price) / entry_price) * 100, 2)
+
+        if needs_1m:
+            history_df.at[idx, "realized_return_1m"] = realized_return
+            history_df.at[idx, "eval_date_1m"] = today
+        if needs_3m:
+            history_df.at[idx, "realized_return_3m"] = realized_return
+            history_df.at[idx, "eval_date_3m"] = today
+
+    return history_df
+
+def append_new_signals(history_df, final_analysis_list):
+    today = pd.Timestamp(dt.date.today())
+    new_rows = []
+    for _, row in final_analysis_list.iterrows():
+        new_rows.append({
+            "run_date": today, "symbol": row["Asset"], "category": row["Category"],
+            "price": row["Price ($)"], "trend": row["Absolute Trend"], "momentum_3m": row["3M Momentum (%)"],
+            "ai_signal": row["AI Action & Risk Warning"], "eval_date_1m": pd.NaT,
+            "realized_return_1m": pd.NA, "eval_date_3m": pd.NaT, "realized_return_3m": pd.NA,
+        })
+    new_df = pd.DataFrame(new_rows)
+    return pd.concat([history_df, new_df], ignore_index=True)
+
+def generate_accuracy_summary(history_df):
+    evaluated = history_df.dropna(subset=["realized_return_1m"])
+    if evaluated.empty:
+        return "Henuz 1 ayi dolmus/degerlendirilmis sinyal yok (ilk ay boyunca bu bolum bos kalacak)."
+
+    avg_return = evaluated["realized_return_1m"].mean()
+    hit_rate = (evaluated["realized_return_1m"] > 0).mean() * 100
+    n = len(evaluated)
+
+    sell_mask = evaluated["ai_signal"].str.contains("SELL|TAKE PROFIT", case=False, na=False)
+    sell_signals = evaluated[sell_mask]
+    sell_avg = sell_signals["realized_return_1m"].mean() if not sell_signals.empty else None
+
+    summary = f"Degerlendirilen Sinyal Sayisi (1A): {n} | Ort. Getiri: {avg_return:.2f}% | Pozitif Oran: {hit_rate:.1f}%"
+    if sell_avg is not None:
+        summary += f"\nSELL sinyali sonrasi ort. getiri: {sell_avg:.2f}% ({len(sell_signals)} sinyal)"
+    return summary
+
+def send_telegram_message(message):
+    print("\n[Telegram] Mesaj gonderimi baslatiliyor...")
+    
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+        print("❌ HATA: Telegram Token veya Chat ID bulunamadi! GitHub Secrets ayarlarini kontrol et.")
+        return
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    
+    # Markdown formatini iptal ettik (Sade metin - %100 teslimat garantisi)
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID, 
+        "text": message
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("✅ Rapor Telegram'a basariyla gonderildi!")
+        else:
+            print(f"❌ Telegram API Hatasi: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"❌ Telegram baglanti hatasi: {e}")
+
+if __name__ == "__main__":
+    watchlist = read_portfolio("portfolio.csv")
+    
+    # CSV dosyasi bos olsa bile Cekirdek Varliklar (CORE_ASSETS) analiz edilsin diye if/else yapisini guncelledik
+    if watchlist:
+        watchlist = [s for s in watchlist if s not in CORE_ASSETS]
+    else:
+        watchlist = [] # Eger csv bos ise sadece cekirdek varliklari (BTC, Altin vs.) degerlendirir
+        
+    final_report, macro_note = dual_momentum_and_risk_analysis(watchlist)
+    pd.set_option('display.max_colwidth', None)
+
+    print("\nStage 3: Sinyal gecmisi guncelleniyor...\n")
+    history_df = load_signal_history()
+    history_df = update_realized_returns(history_df)
+    history_df = append_new_signals(history_df, final_report)
+    history_df.to_csv(HISTORY_FILE, index=False)
+    accuracy_summary = generate_accuracy_summary(history_df)
+
+    report_text = "=" * 65 + "\n🌍 ALPHAGUARD GLOBAL STRATEGIC TACTICAL NOTE\n" + "=" * 65 + f"\n{macro_note}\n\n"
+    report_text += "=" * 65 + "\n🏛️ ALPHAGUARD CORE & SATELLITE PORTFOLIO REPORT\n" + "=" * 65 + "\n" + final_report.to_string(index=False)
+    report_text += "\n\n" + "=" * 65 + "\n📊 GECMIS SINYAL PERFORMANSI (1 Aylik)\n" + "=" * 65 + "\n" + accuracy_summary
+    
+    print(report_text)
+    send_telegram_message(report_text)
