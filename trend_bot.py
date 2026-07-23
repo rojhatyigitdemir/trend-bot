@@ -243,9 +243,13 @@ def dual_momentum_and_risk_analysis(symbols):
     Assets Dataset:
     {batch_serialized_data}
 
-    CRITICAL INSTRUCTION: Generate a short risk/action warning for EACH asset (max 30 words per asset).
-    Rule 1: If return is high (15%+) BUT news is bad OR volume is 'Decreasing', output a 'TAKE PROFIT / SELL WARNING ⚠️'.
-    Rule 2: If it is a Core Foundation asset, lean towards 'HOLD 🟢' unless news is catastrophic.
+    CRITICAL INSTRUCTIONS (FOLLOW EXACTLY):
+    1. You MUST start your response for EVERY SINGLE asset with exactly one of these five tags:
+       [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
+    2. After the tag, provide a maximum 15-word justification. Example: "[TRIM 🟠] High return but decreasing volume suggests taking partial profits."
+    3. RULE for TRIM: If 3M Return is high (15%+) BUT news is mixed/bad OR volume is 'Decreasing', you MUST use [TRIM 🟠] to lock in profits.
+    4. RULE for CORE ASSETS: If the Category is 'Core Foundation', strongly lean towards [ACCUMULATE 🟢] or [HOLD 🟡]. Never use [SELL 🔴] for Core Assets unless the macro news is catastrophic; use [TRIM 🟠] instead if risk is elevated.
+    
     You MUST respond ONLY with a valid JSON object. Keys must be Asset symbols, values the analysis string.
     """
     
