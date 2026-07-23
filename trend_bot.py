@@ -371,43 +371,20 @@ def send_telegram_message(message):
         
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    # Markdown formatini iptal ettik (Sade metin - %100 teslimat garantisi)
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID, 
-        "text": message
-    }
+    max_length = 4000
+    message_chunks = [message[i:i+max_length] for i in range(0, len(message), max_length)]
     
-    try:
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            print("✅ Rapor Telegram'a basariyla gonderildi!")
-        else:
-            print(f"❌ Telegram API Hatasi: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"❌ Telegram baglanti hatasi: {e}")
-
-if __name__ == "__main__":
-    watchlist = read_portfolio("portfolio.csv")
-    
-    # CSV dosyasi bos olsa bile Cekirdek Varliklar (CORE_ASSETS) analiz edilsin diye if/else yapisini guncelledik
-    if watchlist:
-        watchlist = [s for s in watchlist if s not in CORE_ASSETS]
-    else:
-        watchlist = [] # Eger csv bos ise sadece cekirdek varliklari (BTC, Altin vs.) degerlendirir
+    for i, chunk in enumerate(message_chunks):
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID, 
+            "text": chunk
+        }
         
-    final_report, macro_note = dual_momentum_and_risk_analysis(watchlist)
-    pd.set_option('display.max_colwidth', None)
-
-    print("\nStage 3: Sinyal gecmisi guncelleniyor...\n")
-    history_df = load_signal_history()
-    history_df = update_realized_returns(history_df)
-    history_df = append_new_signals(history_df, final_report)
-    history_df.to_csv(HISTORY_FILE, index=False)
-    accuracy_summary = generate_accuracy_summary(history_df)
-
-    report_text = "=" * 65 + "\n🌍 ALPHAGUARD GLOBAL STRATEGIC TACTICAL NOTE\n" + "=" * 65 + f"\n{macro_note}\n\n"
-    report_text += "=" * 65 + "\n🏛️ ALPHAGUARD CORE & SATELLITE PORTFOLIO REPORT\n" + "=" * 65 + "\n" + final_report.to_string(index=False)
-    report_text += "\n\n" + "=" * 65 + "\n📊 GECMIS SINYAL PERFORMANSI (1 Aylik)\n" + "=" * 65 + "\n" + accuracy_summary
-    
-    print(report_text)
-    send_telegram_message(report_text)
+        try:
+            response = requests.post(url, json=payload)
+            if response.status_code == 200:
+                print(f"✅ Rapor Telegram'a basariyla gonderildi! (Parca {i+1}/{len(message_chunks)})")
+            else:
+                print(f"❌ Telegram API Hatasi (Parca {i+1}): {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"❌ Telegram baglanti hatasi: {e}")
