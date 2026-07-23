@@ -19,24 +19,19 @@ warnings.filterwarnings('ignore')
 # ====================================================================
 # --- SETTINGS (AYARLAR) ---
 # ====================================================================
-# GitHub Actions (Production) icin sifreleri tekrar otomatik cekmeye (Secrets) aliyoruz
 API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Eger API Key yoksa kodu durdurmadan uyari ver
 if API_KEY:
     client = genai.Client(api_key=API_KEY)
 else:
     client = None
 
-# Kararli (Stable) Model kullanımı
 MODEL_ID = 'gemini-2.5-flash' 
 
-# ÇEKİRDEK PORTFÖY (CORE ASSETS)
 CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "NVDA", "ENA-USD", "ACN", "ZSIL.SW", "BCHE.SW"]
 
-# --- SINYAL GECMISI AYARLARI ---
 HISTORY_FILE = "signals_history.csv"
 HISTORY_COLUMNS = [
     "run_date", "symbol", "category", "price", "trend",
@@ -78,7 +73,7 @@ def secure_ai_query(prompt, is_json=False, max_retries=3):
         except Exception as e:
             print(f"   [API] Deneme {attempt+1} basarisiz. (Google Sunucusu Mesgul veya Hata). Hata: {e}")
             if attempt < max_retries - 1:
-                time.sleep(12) # Google'a nefes almasi icin 12 saniye ver ve tekrar dene
+                time.sleep(12) 
             else:
                 return "{}" if is_json else "AI Limit/Connection Error"
 
@@ -193,7 +188,6 @@ def dual_momentum_and_risk_analysis(symbols):
             
     df = pd.DataFrame(results)
     
-    # 15 Varlik Secimi
     if not df.empty:
         uptrend_assets = df[df["Absolute Trend"] == "UPTREND 🟢"]
         top_15_leaders = uptrend_assets.sort_values(by="3M Momentum (%)", ascending=False).head(15).copy()
@@ -224,7 +218,6 @@ def dual_momentum_and_risk_analysis(symbols):
     
     batch_serialized_data = ""
     
-    # --- HABER OKUMA DENETİMİ (AUDIT LOG) ---
     print("\n" + "="*50)
     print("📰 HABER OKUMA DENETIMI (Yapay Zekaya Giden Veri)")
     print("="*50)
@@ -239,14 +232,12 @@ def dual_momentum_and_risk_analysis(symbols):
         except Exception:
             news_text = "No news."
             
-        # Çekilen haberleri konsola yazdiriyoruz
         print(f"[{symbol}] Haberleri: {news_text}")
             
         batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 3M Return: {row['3M Momentum (%)']}%, Volume: {row['Volume Status']}, News: {news_text}\n"
 
     print("="*50 + "\n")
 
-    # Prompt icerisindeki asset sayisi dinamik hale getirildi
     batch_prompt = f"""
     You are an elite hedge fund manager. Analyze the following {len(final_analysis_list)} assets simultaneously.
     Assets Dataset:
@@ -371,7 +362,7 @@ def send_telegram_message(message):
         
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    max_length = 4000
+    max_length = 3900
     message_chunks = [message[i:i+max_length] for i in range(0, len(message), max_length)]
     
     for i, chunk in enumerate(message_chunks):
@@ -388,3 +379,36 @@ def send_telegram_message(message):
                 print(f"❌ Telegram API Hatasi (Parca {i+1}): {response.status_code} - {response.text}")
         except Exception as e:
             print(f"❌ Telegram baglanti hatasi: {e}")
+
+if __name__ == "__main__":
+    try:
+        print("\n🚀 ALPHAGUARD SISTEMI BASLATILIYOR...")
+        
+        if not API_KEY or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+            raise ValueError("KRITIK HATA: API_KEY, TELEGRAM_TOKEN veya TELEGRAM_CHAT_ID bulunamadi! GitHub Secrets ayarlarini kontrol et.")
+            
+        watchlist = read_portfolio("portfolio.csv")
+        watchlist = [s for s in watchlist if s not in CORE_ASSETS] if watchlist else []
+        
+        final_report, macro_note = dual_momentum_and_risk_analysis(watchlist)
+        pd.set_option('display.max_colwidth', None)
+
+        print("\nStage 3: Sinyal gecmisi guncelleniyor...\n")
+        history_df = load_signal_history()
+        history_df = update_realized_returns(history_df)
+        history_df = append_new_signals(history_df, final_report)
+        history_df.to_csv(HISTORY_FILE, index=False)
+        accuracy_summary = generate_accuracy_summary(history_df)
+
+        report_text = "=" * 65 + "\n🌍 ALPHAGUARD GLOBAL STRATEGIC TACTICAL NOTE\n" + "=" * 65 + f"\n{macro_note}\n\n"
+        report_text += "=" * 65 + "\n🏛️ ALPHAGUARD CORE & SATELLITE PORTFOLIO REPORT\n" + "=" * 65 + "\n" + final_report.to_string(index=False)
+        report_text += "\n\n" + "=" * 65 + "\n📊 GECMIS SINYAL PERFORMANSI (1 Aylik)\n" + "=" * 65 + "\n" + accuracy_summary
+        
+        print(report_text)
+        send_telegram_message(report_text)
+        
+        print("🏁 SISTEM BASARIYLA TAMAMLANDI!")
+        
+    except Exception as e:
+        print(f"\n❌ FATAL ERROR (Sistem Coktu): {e}")
+        raise e
