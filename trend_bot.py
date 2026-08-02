@@ -1,3 +1,4 @@
+
 import sys
 # Windows sunucularinda emoji ve ozel karakterlerin (Unicode) cokmemesi icin zorunlu UTF-8 ayari
 if hasattr(sys.stdout, 'reconfigure'):
@@ -28,19 +29,46 @@ if API_KEY:
 else:
     client = None
 
-MODEL_ID = 'gemini-2.5-flash' 
+MODEL_ID = 'gemini-2.5-flash'
 
-CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "NVDA", "ENA-USD", "ACN", "ZSIL.SW", "BCHE.SW"]
+CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "ALL", "MU", "KLAC", "ZSIL.SW", "BCHE.SW"]
+
+# --------------------------------------------------------------------
+# YENI: Haftalik strateji parametreleri
+# --------------------------------------------------------------------
+DATA_PERIOD = "2y"              # veri cekim penceresi (ayni kaldi)
+DATA_INTERVAL = "1wk"           # ONCEKI: "1mo" -> ARTIK haftalik bar
+SMA_WINDOW = 8                  # haftalik SMA penceresi (~2 ay, eski 10-aylik SMA'nin haftalik dengi)
+MOMENTUM_WEEKS = 4               # haftalik momentum penceresi (~1 ay)
+MOMENTUM_COL = f"{MOMENTUM_WEEKS}W Momentum (%)"
+
+# "Haftada %5 hedefi" bir GARANTI degil, bir ADAY SECIM FILTRESIDIR.
+# Sadece bu esigin uzerinde momentum gosteren varliklar satellite havuzuna oncelikli girer.
+CANDIDATE_MOMENTUM_THRESHOLD = 5.0
+SATELLITE_TOP_N = 15
+
+# TRIM kurali icin esik: 4 haftalik getiri bu degerin uzerindeyse ve haber/hacim zayifsa TRIM onerilir
+TRIM_MOMENTUM_THRESHOLD = 10.0
+
+# Rebalance (asil sinyal) sadece haftada bir kez calisir; sistem GUNLUK calismaya devam eder
+# ama diger gunler sadece izleme/alarm modundadir.
+REBALANCE_WEEKDAY = 0            # 0 = Pazartesi
+LAST_REBALANCE_FILE = "last_rebalance.txt"
+
+# Gunluk "sok" kontrolu (haftayi beklemeden acil haber/fiyat hareketi alarmi)
+SHOCK_LOOKBACK_DAYS = 3
+SHOCK_THRESHOLD_PCT = 6.0
 
 HISTORY_FILE = "signals_history.csv"
 HISTORY_COLUMNS = [
     "run_date", "symbol", "category", "price", "trend",
-    "momentum_3m", "ai_signal",
-    "eval_date_1m", "realized_return_1m",
-    "eval_date_3m", "realized_return_3m",
+    f"momentum_{MOMENTUM_WEEKS}w", "ai_signal",
+    "eval_date_1w", "realized_return_1w",
+    "eval_date_4w", "realized_return_4w",
 ]
-EVAL_DAYS_1M = 30
-EVAL_DAYS_3M = 90
+EVAL_DAYS_1W = 7
+EVAL_DAYS_4W = 28
+
 
 def read_portfolio(file_name="portfolio.csv"):
     try:
@@ -54,16 +82,18 @@ def read_portfolio(file_name="portfolio.csv"):
         print(f"Error: Could not read {file_name}. Detail: {e}")
         return []
 
+
 def secure_ai_query(prompt, is_json=False, max_retries=3):
     if not client:
         return "{}" if is_json else "API Key Eksik. AI Degerlendirmesi Yapilamadi."
-        
+
     for attempt in range(max_retries):
         try:
             config_args = {"temperature": 0.2}
             if is_json:
                 config_args["response_mime_type"] = "application/json"
-                
+                config_args["max_output_tokens"] = 4096  # YENI: buyuk batch'lerde JSON'un kesilmesini onlemek icin
+
             response = client.models.generate_content(
                 model=MODEL_ID,
                 contents=prompt,
@@ -73,15 +103,16 @@ def secure_ai_query(prompt, is_json=False, max_retries=3):
         except Exception as e:
             print(f"   [API] Deneme {attempt+1} basarisiz. (Google Sunucusu Mesgul veya Hata). Hata: {e}")
             if attempt < max_retries - 1:
-                time.sleep(12) 
+                time.sleep(12)
             else:
                 return "{}" if is_json else "AI Limit/Connection Error"
+
 
 def global_macro_intelligence():
     print("🌍 Analyzing Global Macroeconomics, Geopolitics, and Crypto Agenda...")
     macro_symbols = ["^GSPC", "CL=F", "^TNX", "BTC-USD"]
     macro_text = ""
-    
+
     for ms in macro_symbols:
         try:
             ticker = yf.Ticker(ms)
@@ -93,10 +124,10 @@ def global_macro_intelligence():
                         macro_text += f"- {title}\n"
         except Exception:
             pass
-            
+
     if not macro_text:
         return "Currently, there is a calm trend or limited data flow in global markets."
-        
+
     prompt = f"""
     You are a chief economist and macro strategist. Read the following global macro, geopolitical, and blockchain/crypto news headlines:
     {macro_text}
@@ -105,7 +136,54 @@ def global_macro_intelligence():
     """
     return secure_ai_query(prompt, is_json=False).replace('\n', ' ')
 
-def batch_download_data(symbols, period="2y", interval="1mo"):
+
+# --------------------------------------------------------------------
+# YENI: Gunluk "sok" kontrolu -- haftalik rebalance'i beklemeden,
+# gundemdeki ani hareketler (savas haberi, buyuk AI duyurusu vb.) icin
+# gunluk veriyle hafif bir tarama yapar. Sinyal listesini DEGISTIRMEZ,
+# sadece Telegram'a ayri bir ALARM blogu ekler.
+# --------------------------------------------------------------------
+def daily_shock_check(symbols, lookback_days=SHOCK_LOOKBACK_DAYS, threshold=SHOCK_THRESHOLD_PCT):
+    alerts = []
+    for symbol in symbols:
+        try:
+            hist = yf.Ticker(symbol).history(period="10d", interval="1d")
+            if hist.empty or len(hist) < lookback_days + 1:
+                continue
+            close = hist['Close']
+            change_pct = ((close.iloc[-1] - close.iloc[-(lookback_days + 1)]) / close.iloc[-(lookback_days + 1)]) * 100
+            if abs(change_pct) >= threshold:
+                direction = "sert dustu 🔻" if change_pct < 0 else "sert yukseldi 🔺"
+                alerts.append(f"⚠️ {symbol}: son {lookback_days} gunde {direction} ({change_pct:+.2f}%)")
+        except Exception:
+            continue
+    return alerts
+
+
+# --------------------------------------------------------------------
+# YENI: Rebalance gunu kontrolu ve state yonetimi
+# --------------------------------------------------------------------
+def is_rebalance_day():
+    today = dt.date.today()
+    if today.weekday() != REBALANCE_WEEKDAY:
+        return False
+    if os.path.exists(LAST_REBALANCE_FILE):
+        try:
+            with open(LAST_REBALANCE_FILE, "r") as f:
+                last = f.read().strip()
+            if last == str(today):
+                return False  # ayni gun icinde birden fazla tetiklenmeyi onle
+        except Exception:
+            pass
+    return True
+
+
+def mark_rebalance_done():
+    with open(LAST_REBALANCE_FILE, "w") as f:
+        f.write(str(dt.date.today()))
+
+
+def batch_download_data(symbols, period=DATA_PERIOD, interval=DATA_INTERVAL):
     try:
         data = yf.download(
             tickers=symbols, period=period, interval=interval,
@@ -117,6 +195,7 @@ def batch_download_data(symbols, period="2y", interval="1mo"):
     except Exception as e:
         print(f"   [Uyari] Toplu indirme basarisiz oldu. Detay: {e}")
         return None
+
 
 def analyze_asset_data(symbol, batch_data=None):
     try:
@@ -137,26 +216,42 @@ def analyze_asset_data(symbol, batch_data=None):
                 data = None
 
         if data is None:
-            data = yf.download(symbol, period="2y", interval="1mo", progress=False)
+            data = yf.download(symbol, period=DATA_PERIOD, interval=DATA_INTERVAL, progress=False)
 
-        if data.empty or len(data) < 10:
+        if data.empty or len(data) < SMA_WINDOW + MOMENTUM_WEEKS + 3:
             return None
-        
+
         close_price = data['Close'][symbol] if isinstance(data.columns, pd.MultiIndex) else data['Close']
         volume = data['Volume'][symbol] if isinstance(data.columns, pd.MultiIndex) else data['Volume']
-        
+
+        # --- LOOK-AHEAD BIAS DUZELTMESI ---
+        # Son bar, henuz kapanmamis (icinde bulunulan) hafta olabilir.
+        # SMA / momentum hesaplarini TAMAMLANMIS haftalar uzerinden yapiyoruz;
+        # "guncel fiyat" olarak ise en son mevcut veri noktasini gosteriyoruz.
+        last_bar_date = pd.Timestamp(close_price.index[-1]).tz_localize(None)
+        today = pd.Timestamp(dt.date.today())
+        current_week_open = today - pd.Timedelta(days=today.weekday())
+        is_last_bar_open_week = last_bar_date >= current_week_open
+
         current_price = close_price.iloc[-1]
-        sma_10 = close_price.rolling(window=10).mean().iloc[-1]
-        trend = "UPTREND 🟢" if current_price > sma_10 else "DOWNTREND 🔴"
-        
-        price_3m_ago = close_price.iloc[-4] 
-        momentum_3m = ((current_price - price_3m_ago) / price_3m_ago) * 100
-        
+        closed_close = close_price.iloc[:-1] if is_last_bar_open_week else close_price
+        closed_volume = volume.iloc[:-1] if is_last_bar_open_week else volume
+
+        if len(closed_close) < SMA_WINDOW + MOMENTUM_WEEKS + 1:
+            return None
+
+        sma_ref = closed_close.rolling(window=SMA_WINDOW).mean().iloc[-1]
+        reference_price = closed_close.iloc[-1]  # trend/momentum icin baz alinan SON TAMAMLANMIS hafta
+        trend = "UPTREND 🟢" if reference_price > sma_ref else "DOWNTREND 🔴"
+
+        momentum_ref_price = closed_close.iloc[-(MOMENTUM_WEEKS + 1)]
+        momentum_pct = ((reference_price - momentum_ref_price) / momentum_ref_price) * 100
+
         try:
-            last_full_month_vol = volume.iloc[-2]
-            prev_3m_vol_avg = volume.iloc[-5:-2].mean()
-            volume_change = ((last_full_month_vol - prev_3m_vol_avg) / prev_3m_vol_avg) * 100 if prev_3m_vol_avg > 0 else 0
-            
+            last_full_week_vol = closed_volume.iloc[-1]
+            prev_avg_vol = closed_volume.iloc[-(MOMENTUM_WEEKS + 1):-1].mean()
+            volume_change = ((last_full_week_vol - prev_avg_vol) / prev_avg_vol) * 100 if prev_avg_vol > 0 else 0
+
             if volume_change > 15:
                 volume_comment = "Increasing (Strong)"
             elif volume_change < -15:
@@ -167,35 +262,44 @@ def analyze_asset_data(symbol, batch_data=None):
             volume_comment = "No Data"
 
         return {
-            "Asset": symbol, "Price ($)": round(current_price, 2), "Absolute Trend": trend,
-            "3M Momentum (%)": round(momentum_3m, 2), "Volume Status": volume_comment,
+            "Asset": symbol,
+            "Price ($)": round(current_price, 2),
+            "Absolute Trend": trend,
+            MOMENTUM_COL: round(momentum_pct, 2),
+            "Volume Status": volume_comment,
             "AI Action & Risk Warning": "---"
         }
-    except Exception:
+    except Exception as e:
+        print(f"   [Uyari] {symbol} analiz edilemedi: {e}")
         return None
 
-def dual_momentum_and_risk_analysis(symbols):
+
+def dual_momentum_and_risk_analysis(symbols, macro_note):
     results = []
-    print(f"AlphaGuard AI Initiating...\nStage 1: Calculating Data...\n")
+    print(f"AlphaGuard AI Initiating (Haftalik Rebalance)...\nStage 1: Calculating Data...\n")
 
     all_symbols = list(dict.fromkeys(list(symbols) + CORE_ASSETS))
     batch_data = batch_download_data(all_symbols)
-    
+
     for symbol in symbols:
         asset_data = analyze_asset_data(symbol, batch_data=batch_data)
         if asset_data:
             results.append(asset_data)
-            
+
     df = pd.DataFrame(results)
-    
+
     if not df.empty:
         uptrend_assets = df[df["Absolute Trend"] == "UPTREND 🟢"]
-        top_15_leaders = uptrend_assets.sort_values(by="3M Momentum (%)", ascending=False).head(15).copy()
+        # YENI: once %5 hedefine aday olabilecek guclu momentum havuzunu dene;
+        # hicbir varlik esigi gecmiyorsa normal siralamaya geri don (bos satellite'i onlemek icin)
+        strong_candidates = uptrend_assets[uptrend_assets[MOMENTUM_COL] >= CANDIDATE_MOMENTUM_THRESHOLD]
+        pool = strong_candidates if not strong_candidates.empty else uptrend_assets
+        top_leaders = pool.sort_values(by=MOMENTUM_COL, ascending=False).head(SATELLITE_TOP_N).copy()
     else:
-        top_15_leaders = pd.DataFrame()
-        
-    top_15_leaders['Category'] = 'Dynamic Top 15'
-    
+        top_leaders = pd.DataFrame()
+
+    top_leaders['Category'] = 'Dynamic Top Candidates'
+
     core_results = []
     for symbol in CORE_ASSETS:
         asset_data = analyze_asset_data(symbol, batch_data=batch_data)
@@ -204,24 +308,22 @@ def dual_momentum_and_risk_analysis(symbols):
             core_results.append(asset_data)
         else:
             core_results.append({
-                "Asset": symbol, "Price ($)": 0.0, "Absolute Trend": "UNKNOWN", 
-                "3M Momentum (%)": 0.0, "Volume Status": "No Data", 
+                "Asset": symbol, "Price ($)": 0.0, "Absolute Trend": "UNKNOWN",
+                MOMENTUM_COL: 0.0, "Volume Status": "No Data",
                 "AI Action & Risk Warning": "Data Error", "Category": 'Core Foundation'
             })
-            
+
     df_core = pd.DataFrame(core_results)
-    final_analysis_list = pd.concat([df_core, top_15_leaders], ignore_index=True)
-    
-    macro_note = global_macro_intelligence()
-    
+    final_analysis_list = pd.concat([df_core, top_leaders], ignore_index=True)
+
     print(f"\nStage 2: Packaging Assets for Batch JSON AI Analysis...")
-    
+
     batch_serialized_data = ""
-    
-    print("\n" + "="*50)
+
+    print("\n" + "=" * 50)
     print("📰 HABER OKUMA DENETIMI (Yapay Zekaya Giden Veri)")
-    print("="*50)
-    
+    print("=" * 50)
+
     for index, row in final_analysis_list.iterrows():
         symbol = row["Asset"]
         try:
@@ -231,15 +333,18 @@ def dual_momentum_and_risk_analysis(symbols):
             news_text = " | ".join([t for t in news_titles if t]) if news_titles else "No news."
         except Exception:
             news_text = "No news."
-            
-        print(f"[{symbol}] Haberleri: {news_text}")
-            
-        batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 3M Return: {row['3M Momentum (%)']}%, Volume: {row['Volume Status']}, News: {news_text}\n"
 
-    print("="*50 + "\n")
+        print(f"[{symbol}] Haberleri: {news_text}")
+
+        batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, {MOMENTUM_WEEKS}W Return: {row[MOMENTUM_COL]}%, Volume: {row['Volume Status']}, News: {news_text}\n"
+
+    print("=" * 50 + "\n")
 
     batch_prompt = f"""
-    You are an elite hedge fund manager. Analyze the following {len(final_analysis_list)} assets simultaneously.
+    You are an elite hedge fund manager running a WEEKLY rebalanced strategy (positions reviewed every {7} days).
+    Global context for today: {macro_note}
+
+    Analyze the following {len(final_analysis_list)} assets simultaneously.
     Assets Dataset:
     {batch_serialized_data}
 
@@ -247,14 +352,15 @@ def dual_momentum_and_risk_analysis(symbols):
     1. You MUST start your response for EVERY SINGLE asset with exactly one of these five tags:
        [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
     2. After the tag, provide a maximum 15-word justification. Example: "[TRIM 🟠] High return but decreasing volume suggests taking partial profits."
-    3. RULE for TRIM: If 3M Return is high (15%+) BUT news is mixed/bad OR volume is 'Decreasing', you MUST use [TRIM 🟠] to lock in profits.
+    3. RULE for TRIM: If {MOMENTUM_WEEKS}W Return is high ({TRIM_MOMENTUM_THRESHOLD}%+) BUT news is mixed/bad OR volume is 'Decreasing', you MUST use [TRIM 🟠] to lock in profits.
     4. RULE for CORE ASSETS: If the Category is 'Core Foundation', strongly lean towards [ACCUMULATE 🟢] or [HOLD 🟡]. Never use [SELL 🔴] for Core Assets unless the macro news is catastrophic; use [TRIM 🟠] instead if risk is elevated.
-    
+    5. RULE for CANDIDATES: Category 'Dynamic Top Candidates' assets were already pre-filtered for strong {MOMENTUM_WEEKS}-week momentum -- do not treat high momentum alone as automatically bullish; weigh it against news and volume as in rule 3.
+
     You MUST respond ONLY with a valid JSON object. Keys must be Asset symbols, values the analysis string.
     """
-    
+
     raw_json_response = secure_ai_query(batch_prompt, is_json=True)
-    
+
     try:
         analysis_dict = json.loads(raw_json_response)
         for index, row in final_analysis_list.iterrows():
@@ -267,12 +373,13 @@ def dual_momentum_and_risk_analysis(symbols):
             final_analysis_list.at[index, "AI Action & Risk Warning"] = "Technical Review Required"
 
     df_display = final_analysis_list.drop(columns=["Volume Status"])
-    return df_display, macro_note
+    return df_display
+
 
 def load_signal_history():
     if os.path.exists(HISTORY_FILE):
         try:
-            df = pd.read_csv(HISTORY_FILE, parse_dates=["run_date", "eval_date_1m", "eval_date_3m"])
+            df = pd.read_csv(HISTORY_FILE, parse_dates=["run_date", "eval_date_1w", "eval_date_4w"])
             for col in HISTORY_COLUMNS:
                 if col not in df.columns:
                     df[col] = pd.NA
@@ -280,6 +387,7 @@ def load_signal_history():
         except Exception as e:
             print(f"[Uyari] signals_history okunamadi. Detay: {e}")
     return pd.DataFrame(columns=HISTORY_COLUMNS)
+
 
 def get_latest_price(symbol):
     try:
@@ -290,6 +398,7 @@ def get_latest_price(symbol):
         pass
     return None
 
+
 def update_realized_returns(history_df):
     if history_df.empty:
         return history_df
@@ -299,32 +408,36 @@ def update_realized_returns(history_df):
 
     for idx, row in history_df.iterrows():
         run_date = row["run_date"]
-        if pd.isna(run_date): continue
-        
+        if pd.isna(run_date):
+            continue
+
         days_passed = (today - run_date).days
         entry_price = row["price"]
 
-        needs_1m = days_passed >= EVAL_DAYS_1M and pd.isna(row.get("realized_return_1m"))
-        needs_3m = days_passed >= EVAL_DAYS_3M and pd.isna(row.get("realized_return_3m"))
+        needs_1w = days_passed >= EVAL_DAYS_1W and pd.isna(row.get("realized_return_1w"))
+        needs_4w = days_passed >= EVAL_DAYS_4W and pd.isna(row.get("realized_return_4w"))
 
-        if not (needs_1m or needs_3m): continue
+        if not (needs_1w or needs_4w):
+            continue
 
         if row["symbol"] not in price_cache:
             price_cache[row["symbol"]] = get_latest_price(row["symbol"])
-            
+
         current_price = price_cache[row["symbol"]]
-        if current_price is None or not entry_price: continue
+        if current_price is None or not entry_price:
+            continue
 
         realized_return = round(((current_price - entry_price) / entry_price) * 100, 2)
 
-        if needs_1m:
-            history_df.at[idx, "realized_return_1m"] = realized_return
-            history_df.at[idx, "eval_date_1m"] = today
-        if needs_3m:
-            history_df.at[idx, "realized_return_3m"] = realized_return
-            history_df.at[idx, "eval_date_3m"] = today
+        if needs_1w:
+            history_df.at[idx, "realized_return_1w"] = realized_return
+            history_df.at[idx, "eval_date_1w"] = today
+        if needs_4w:
+            history_df.at[idx, "realized_return_4w"] = realized_return
+            history_df.at[idx, "eval_date_4w"] = today
 
     return history_df
+
 
 def append_new_signals(history_df, final_analysis_list):
     today = pd.Timestamp(dt.date.today())
@@ -332,49 +445,66 @@ def append_new_signals(history_df, final_analysis_list):
     for _, row in final_analysis_list.iterrows():
         new_rows.append({
             "run_date": today, "symbol": row["Asset"], "category": row["Category"],
-            "price": row["Price ($)"], "trend": row["Absolute Trend"], "momentum_3m": row["3M Momentum (%)"],
-            "ai_signal": row["AI Action & Risk Warning"], "eval_date_1m": pd.NaT,
-            "realized_return_1m": pd.NA, "eval_date_3m": pd.NaT, "realized_return_3m": pd.NA,
+            "price": row["Price ($)"], "trend": row["Absolute Trend"], f"momentum_{MOMENTUM_WEEKS}w": row[MOMENTUM_COL],
+            "ai_signal": row["AI Action & Risk Warning"], "eval_date_1w": pd.NaT,
+            "realized_return_1w": pd.NA, "eval_date_4w": pd.NaT, "realized_return_4w": pd.NA,
         })
     new_df = pd.DataFrame(new_rows)
     return pd.concat([history_df, new_df], ignore_index=True)
 
+
 def generate_accuracy_summary(history_df):
-    evaluated = history_df.dropna(subset=["realized_return_1m"])
-    if evaluated.empty:
-        return "Henuz 1 ayi dolmus/degerlendirilmis sinyal yok (ilk ay boyunca bu bolum bos kalacak)."
+    def is_hit(row, col):
+        ret = row[col]
+        if pd.isna(ret):
+            return None
+        # YENI: yon-farkinda isabet olcumu -- SELL/TRIM sinyali dususu, BUY/HOLD sinyali yukselisi "isabet" sayar
+        if any(tag in str(row["ai_signal"]) for tag in ["SELL", "TRIM"]):
+            return ret < 0
+        return ret > 0
 
-    avg_return = evaluated["realized_return_1m"].mean()
-    hit_rate = (evaluated["realized_return_1m"] > 0).mean() * 100
-    n = len(evaluated)
+    evaluated_1w = history_df.dropna(subset=["realized_return_1w"])
+    if evaluated_1w.empty:
+        return "Henuz 1 haftasi dolmus/degerlendirilmis sinyal yok (ilk hafta boyunca bu bolum bos kalacak)."
 
-    sell_mask = evaluated["ai_signal"].str.contains("SELL|TAKE PROFIT", case=False, na=False)
-    sell_signals = evaluated[sell_mask]
-    sell_avg = sell_signals["realized_return_1m"].mean() if not sell_signals.empty else None
+    evaluated_1w = evaluated_1w.copy()
+    evaluated_1w["hit"] = evaluated_1w.apply(lambda r: is_hit(r, "realized_return_1w"), axis=1)
+    avg_return_1w = evaluated_1w["realized_return_1w"].mean()
+    hit_rate_1w = evaluated_1w["hit"].mean() * 100
+    n_1w = len(evaluated_1w)
 
-    summary = f"Degerlendirilen Sinyal Sayisi (1A): {n} | Ort. Getiri: {avg_return:.2f}% | Pozitif Oran: {hit_rate:.1f}%"
-    if sell_avg is not None:
-        summary += f"\nSELL sinyali sonrasi ort. getiri: {sell_avg:.2f}% ({len(sell_signals)} sinyal)"
+    summary = f"[1 Hafta] Degerlendirilen Sinyal: {n_1w} | Ort. Getiri: {avg_return_1w:.2f}% | Yon-Dogru Oran: {hit_rate_1w:.1f}%"
+
+    evaluated_4w = history_df.dropna(subset=["realized_return_4w"])
+    if not evaluated_4w.empty:
+        evaluated_4w = evaluated_4w.copy()
+        evaluated_4w["hit"] = evaluated_4w.apply(lambda r: is_hit(r, "realized_return_4w"), axis=1)
+        avg_return_4w = evaluated_4w["realized_return_4w"].mean()
+        hit_rate_4w = evaluated_4w["hit"].mean() * 100
+        n_4w = len(evaluated_4w)
+        summary += f"\n[4 Hafta] Degerlendirilen Sinyal: {n_4w} | Ort. Getiri: {avg_return_4w:.2f}% | Yon-Dogru Oran: {hit_rate_4w:.1f}%"
+
     return summary
+
 
 def send_telegram_message(message):
     print("\n[Telegram] Mesaj gonderimi baslatiliyor...")
-    
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("❌ HATA: Telegram Token veya Chat ID bulunamadi! GitHub Secrets ayarlarini kontrol et.")
         return
-        
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
+
     max_length = 3900
-    message_chunks = [message[i:i+max_length] for i in range(0, len(message), max_length)]
-    
+    message_chunks = [message[i:i + max_length] for i in range(0, len(message), max_length)]
+
     for i, chunk in enumerate(message_chunks):
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID, 
+            "chat_id": TELEGRAM_CHAT_ID,
             "text": chunk
         }
-        
+
         try:
             response = requests.post(url, json=payload)
             if response.status_code == 200:
@@ -384,35 +514,67 @@ def send_telegram_message(message):
         except Exception as e:
             print(f"❌ Telegram baglanti hatasi: {e}")
 
+
+# --------------------------------------------------------------------
+# YENI: Rapor metinleri -- rebalance gunu ile gunluk izleme gunu icin ayri format
+# --------------------------------------------------------------------
+def build_full_report(macro_note, final_report_df, accuracy_summary, shock_alerts):
+    text = "=" * 65 + "\n🌍 ALPHAGUARD GLOBAL STRATEJIK NOT (Gunluk)\n" + "=" * 65 + f"\n{macro_note}\n\n"
+    if shock_alerts:
+        text += "=" * 65 + "\n⚡ ANLIK SOK UYARILARI\n" + "=" * 65 + "\n" + "\n".join(shock_alerts) + "\n\n"
+    text += "=" * 65 + "\n🏛️ ALPHAGUARD HAFTALIK PORTFOY RAPORU (Rebalance Gunu)\n" + "=" * 65 + "\n" + final_report_df.to_string(index=False)
+    text += "\n\n" + "=" * 65 + "\n📊 GECMIS SINYAL PERFORMANSI\n" + "=" * 65 + "\n" + accuracy_summary
+    return text
+
+
+def build_daily_monitor_report(macro_note, shock_alerts):
+    text = "=" * 65 + "\n🌍 ALPHAGUARD GUNLUK IZLEME NOTU\n" + "=" * 65 + f"\n{macro_note}\n\n"
+    if shock_alerts:
+        text += "=" * 65 + "\n⚡ ANLIK SOK UYARILARI\n" + "=" * 65 + "\n" + "\n".join(shock_alerts) + "\n\n"
+    else:
+        text += "Bugun icin esik-asan bir sok hareket tespit edilmedi.\n\n"
+    text += "ℹ️ Not: Portfoy sinyalleri haftalik olarak (Pazartesi) yeniden hesaplanir; bugun rebalance gunu degil, sadece izleme yapildi."
+    return text
+
+
 if __name__ == "__main__":
     try:
-        print("\n🚀 ALPHAGUARD SISTEMI BASLATILIYOR...")
-        
+        print("\n🚀 ALPHAGUARD SISTEMI BASLATILIYOR (Haftalik Strateji / Gunluk Izleme)...")
+
         if not API_KEY or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
             raise ValueError("KRITIK HATA: API_KEY, TELEGRAM_TOKEN veya TELEGRAM_CHAT_ID bulunamadi! GitHub Secrets ayarlarini kontrol et.")
-            
-        watchlist = read_portfolio("portfolio.csv")
-        watchlist = [s for s in watchlist if s not in CORE_ASSETS] if watchlist else []
-        
-        final_report, macro_note = dual_momentum_and_risk_analysis(watchlist)
-        pd.set_option('display.max_colwidth', None)
 
-        print("\nStage 3: Sinyal gecmisi guncelleniyor...\n")
-        history_df = load_signal_history()
-        history_df = update_realized_returns(history_df)
-        history_df = append_new_signals(history_df, final_report)
-        history_df.to_csv(HISTORY_FILE, index=False)
-        accuracy_summary = generate_accuracy_summary(history_df)
+        # Bu ikisi HER GUN calisir (haber akisi ve ani hareketleri kacirmamak icin)
+        macro_note = global_macro_intelligence()
+        shock_alerts = daily_shock_check(CORE_ASSETS)
 
-        report_text = "=" * 65 + "\n🌍 ALPHAGUARD GLOBAL STRATEGIC TACTICAL NOTE\n" + "=" * 65 + f"\n{macro_note}\n\n"
-        report_text += "=" * 65 + "\n🏛️ ALPHAGUARD CORE & SATELLITE PORTFOLIO REPORT\n" + "=" * 65 + "\n" + final_report.to_string(index=False)
-        report_text += "\n\n" + "=" * 65 + "\n📊 GECMIS SINYAL PERFORMANSI (1 Aylik)\n" + "=" * 65 + "\n" + accuracy_summary
-        
+        if is_rebalance_day():
+            print("\n📅 Bugun REBALANCE gunu (haftalik sinyal yeniden hesaplaniyor)...")
+
+            watchlist = read_portfolio("portfolio.csv")
+            watchlist = [s for s in watchlist if s not in CORE_ASSETS] if watchlist else []
+
+            final_report = dual_momentum_and_risk_analysis(watchlist, macro_note)
+            pd.set_option('display.max_colwidth', None)
+
+            print("\nStage 3: Sinyal gecmisi guncelleniyor...\n")
+            history_df = load_signal_history()
+            history_df = update_realized_returns(history_df)
+            history_df = append_new_signals(history_df, final_report)
+            history_df.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+            accuracy_summary = generate_accuracy_summary(history_df)
+
+            report_text = build_full_report(macro_note, final_report, accuracy_summary, shock_alerts)
+            mark_rebalance_done()
+        else:
+            print("\n📡 Bugun izleme gunu (rebalance yok, sadece makro + sok taramasi)...")
+            report_text = build_daily_monitor_report(macro_note, shock_alerts)
+
         print(report_text)
         send_telegram_message(report_text)
-        
+
         print("🏁 SISTEM BASARIYLA TAMAMLANDI!")
-        
+
     except Exception as e:
         print(f"\n❌ FATAL ERROR (Sistem Coktu): {e}")
         raise e
