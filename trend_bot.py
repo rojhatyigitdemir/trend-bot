@@ -39,15 +39,14 @@ DATA_INTERVAL = "1wk"
 SMA_WINDOW = 8
 MOMENTUM_WEEKS = 4
 MOMENTUM_COL = f"{MOMENTUM_WEEKS}W Mom (%)"
-RETURN_1W_COL = "1W Ret (%)" # Erken donus icin eklendi
+RETURN_1W_COL = "1W Ret (%)"
 
-SATELLITE_TOP_N = 20
+SATELLITE_TREND_N = 15     # 15 Adet Güvenli Yükseliş
+EARLY_REVERSAL_N = 5       # 5 Adet Dipten Dönüş
 
 TRIM_MOMENTUM_THRESHOLD = 10.0
-
 REBALANCE_WEEKDAYS = {0, 4}
 LAST_REBALANCE_FILE = "last_rebalance.txt"
-
 SHOCK_LOOKBACK_DAYS = 3
 SHOCK_THRESHOLD_PCT = 6.0
 
@@ -80,7 +79,7 @@ def secure_ai_query(prompt, is_json=False, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            config_args = {"temperature": 0.2}
+            config_args = {"temperature": 0.1} 
             if is_json:
                 config_args["response_mime_type"] = "application/json"
                 config_args["max_output_tokens"] = 8192
@@ -101,8 +100,9 @@ def secure_ai_query(prompt, is_json=False, max_retries=3):
                 
             return result_text
         except Exception as e:
+            print(f"   [API Hatası] Deneme {attempt+1}: {e}")
             if attempt < max_retries - 1: time.sleep(12)
-            else: return "{}" if is_json else "AI Limit/Error"
+            else: return "{}" if is_json else "AI Sunucu Hatası"
 
 def global_macro_intelligence():
     macro_symbols = ["^GSPC", "CL=F", "^TNX", "BTC-USD"]
@@ -194,11 +194,9 @@ def analyze_asset_data(symbol, batch_data=None):
         momentum_ref_price = closed_close.iloc[-(MOMENTUM_WEEKS)] 
         momentum_pct = ((current_price - momentum_ref_price) / momentum_ref_price) * 100
         
-        # 1 Haftalik Momentumu (Erken Donus icin) Hesapla
         one_week_ref_price = closed_close.iloc[-1]
         one_week_pct = ((current_price - one_week_ref_price) / one_week_ref_price) * 100
 
-        # RVOL (Goreceli Hacim) Bilimsel Hesaplamasi
         volume_change = 0
         try:
             last_full_week_vol = closed_volume.iloc[-1]
@@ -218,7 +216,7 @@ def analyze_asset_data(symbol, batch_data=None):
             "Absolute Trend": trend,
             RETURN_1W_COL: round(one_week_pct, 2),
             MOMENTUM_COL: round(momentum_pct, 2),
-            "Volume_Num": volume_change, # Filtreleme icin saklanan sayisal hacim (RVOL)
+            "Volume_Num": volume_change, 
             "Volume Status": volume_comment,
             "AI Action & Risk Warning": "---"
         }
@@ -226,8 +224,7 @@ def analyze_asset_data(symbol, batch_data=None):
 
 def dual_momentum_and_risk_analysis(symbols, macro_note):
     results = []
-    today_name = "Pazartesi" if dt.date.today().weekday() == 0 else "Cuma"
-    print(f"AlphaGuard AI Initiating ({today_name} Rebalance)...\nStage 1: Calculating Data...\n")
+    print(f"AlphaGuard AI Initiating Rebalance...\nStage 1: Calculating Data...\n")
 
     all_symbols = list(dict.fromkeys(list(symbols) + CORE_ASSETS))
     batch_data = batch_download_data(all_symbols)
@@ -239,23 +236,19 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
     df = pd.DataFrame(results)
 
     if not df.empty:
-        # 1. ASAMA: TREND TAKIPCILERI (UPTREND)
+        # 1. Aşama: Trend Liderleri (Sabit 15 Kontenjan)
         uptrend_assets = df[df["Absolute Trend"] == "UPTREND 🟢"].copy()
-        top_leaders = uptrend_assets.sort_values(by=MOMENTUM_COL, ascending=False).head(SATELLITE_TOP_N).copy()
+        top_leaders = uptrend_assets.sort_values(by=MOMENTUM_COL, ascending=False).head(SATELLITE_TREND_N).copy()
         if not top_leaders.empty: top_leaders['Category'] = 'Dynamic Top Candidates'
 
-        # 2. ASAMA: BOSLUK VARSA EARLY REVERSAL (DIPTEN DONUS) ILE DOLDUR
-        shortfall = SATELLITE_TOP_N - len(top_leaders)
-        if shortfall > 0:
-            downtrend_assets = df[df["Absolute Trend"] == "DOWNTREND 🔴"].copy()
-            # Bilimsel Kural: Fiyat dustu ama son 1 haftada getiri 0'dan buyuk VE hacim en az %15 artti
-            early_reversals = downtrend_assets[(downtrend_assets[RETURN_1W_COL] > 0) & (downtrend_assets["Volume_Num"] >= 15)].copy()
-            
-            if not early_reversals.empty:
-                # 1 haftalik gucu en yuksek olanlari sec
-                early_reversals = early_reversals.sort_values(by=RETURN_1W_COL, ascending=False).head(shortfall)
-                early_reversals['Category'] = 'Early Reversal Candidate'
-                top_leaders = pd.concat([top_leaders, early_reversals], ignore_index=True)
+        # 2. Aşama: Erken Dönüş (Sabit 5 Kontenjan)
+        downtrend_assets = df[df["Absolute Trend"] == "DOWNTREND 🔴"].copy()
+        early_reversals = downtrend_assets[(downtrend_assets[RETURN_1W_COL] > 0) & (downtrend_assets["Volume_Num"] >= 15)].copy()
+        
+        if not early_reversals.empty:
+            early_reversals = early_reversals.sort_values(by=RETURN_1W_COL, ascending=False).head(EARLY_REVERSAL_N)
+            early_reversals['Category'] = 'Early Reversal Candidate'
+            top_leaders = pd.concat([top_leaders, early_reversals], ignore_index=True)
     else:
         top_leaders = pd.DataFrame()
 
@@ -287,22 +280,20 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
         batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 1W Ret: {row[RETURN_1W_COL]}%, {MOMENTUM_WEEKS}W Ret: {row[MOMENTUM_COL]}%, Volume: {row['Volume Status']}, News: {news_text}\n"
 
     batch_prompt = f"""
-    You are an elite hedge fund manager running a dynamic strategy (positions reviewed Monday and Friday).
-    Global context for today: {macro_note}
+    You are an elite hedge fund manager. 
+    Global context: {macro_note}
 
-    Analyze the following {len(final_analysis_list)} assets simultaneously.
-    Assets Dataset:
+    Analyze the following {len(final_analysis_list)} assets:
     {batch_serialized_data}
 
-    CRITICAL INSTRUCTIONS (FOLLOW EXACTLY):
-    1. You MUST start your response for EVERY SINGLE asset with exactly one of these five tags: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
-    2. After the tag, provide a maximum 15-word justification. 
-    3. RULE for TRIM: If {MOMENTUM_WEEKS}W Ret is high ({TRIM_MOMENTUM_THRESHOLD}%+) BUT news is mixed/bad OR volume is 'Decreasing', you MUST use [TRIM 🟠].
-    4. RULE for CORE ASSETS: Strongly lean towards [ACCUMULATE 🟢] or [HOLD 🟡]. Never use [SELL 🔴] unless macro news is catastrophic.
-    5. RULE for EARLY REVERSAL: If Category is 'Early Reversal Candidate', the asset is in a macro downtrend but showing sudden volume spikes and positive 1-week return. Evaluate this as a potential bottom-fishing opportunity.
+    CRITICAL INSTRUCTIONS:
+    1. Start response for EVERY asset with ONE tag: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
+    2. Provide a max 15-word justification.
+    3. RULE for TRIM: If {MOMENTUM_WEEKS}W Ret > {TRIM_MOMENTUM_THRESHOLD}% BUT news is bad OR volume is 'Decreasing', use [TRIM 🟠].
+    4. RULE for EARLY REVERSAL: If Category is 'Early Reversal Candidate', view it as a bottom-fishing opportunity (Volume spiked, 1W return positive).
+    5. CRITICAL: DO NOT use ANY quotation marks (' or ") inside your text.
     
-    CRITICAL JSON RULE: DO NOT use ANY quotation marks (single ' or double ") anywhere inside the justification text.
-    You MUST respond ONLY with a valid JSON object. Keys must be Asset symbols, values the analysis string.
+    Respond ONLY with a valid JSON object: {{"Symbol": "Tag Justification"}}
     """
 
     raw_json_response = secure_ai_query(batch_prompt, is_json=True)
@@ -311,11 +302,12 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
         analysis_dict = json.loads(raw_json_response)
         for index, row in final_analysis_list.iterrows():
             final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor.").replace('\n', ' ')
-    except Exception:
+    except Exception as e:
+        print(f"\n❌ JSON ÇÖZÜMLEME HATASI: {e}")
+        print(f"Yapay Zekanın Ürettiği Bozuk Çıktı:\n{raw_json_response}\n")
         for index, row in final_analysis_list.iterrows():
-            final_analysis_list.at[index, "AI Action & Risk Warning"] = "Technical Review Required"
+            final_analysis_list.at[index, "AI Action & Risk Warning"] = "API JSON Hatası"
 
-    # Tabloda kalabalik yapmamasi icin arka plan hacim sayisini temizle
     df_display = final_analysis_list.drop(columns=["Volume_Num", "Volume Status"])
     return df_display
 
@@ -399,21 +391,54 @@ def generate_accuracy_summary(history_df):
             summary += f"\n[4 Hafta] Sinyal: {len(evaluated_4w)} | Ort. Getiri: {evaluated_4w['realized_return_4w'].mean():.2f}% | Isabet: {evaluated_4w['hit'].mean() * 100:.1f}%"
     return summary
 
-def send_telegram_message(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
+def send_telegram_message(messages):
+    print("\n[Telegram] Mesaj gönderimi deneniyor...")
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+        print("❌ HATA: Token veya Chat ID boş!")
+        return
     url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
-    for chunk in [message[i:i+3900] for i in range(0, len(message), 3900)]:
-        try: requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk})
-        except Exception: pass
+    
+    # Eger text listesi degilse, listeye cevir (gunluk izleme raporu icin)
+    if isinstance(messages, str):
+        messages = [messages]
+        
+    for i, msg in enumerate(messages):
+        try: 
+            response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+            if response.status_code == 200:
+                print(f"✅ Mesaj başarıyla iletildi. (Parça {i+1}/{len(messages)})")
+            else:
+                print(f"❌ Telegram API Hatası (Parça {i+1}): Kodu {response.status_code}, Hata: {response.text}")
+        except Exception as e: 
+            print(f"❌ İnternet / Bağlantı Hatası: {e}")
+        
+        # Telegram'in flood (spam) limitine takilmamak icin bekleyis
+        time.sleep(1)
 
-def build_full_report(macro_note, final_report_df, accuracy_summary, shock_alerts):
+def build_full_report_messages(macro_note, final_report_df, accuracy_summary, shock_alerts):
+    messages = []
     today_name = "Pazartesi" if dt.date.today().weekday() == 0 else "Cuma"
     rebalance_label = f"{today_name} Rebalance" + (" (Hafta Sonu Oncesi Tasfiye)" if today_name == "Cuma" else "")
-    text = "=" * 65 + f"\n🌍 GLOBAL STRATEJIK NOT\n" + "=" * 65 + f"\n{macro_note}\n\n"
-    if shock_alerts: text += "=" * 65 + "\n⚡ ANLIK SOK UYARILARI\n" + "=" * 65 + "\n" + "\n".join(shock_alerts) + "\n\n"
-    text += "=" * 65 + f"\n🏛️ PORTFOY RAPORU ({rebalance_label})\n" + "=" * 65 + "\n" + final_report_df.to_string(index=False)
-    text += "\n\n" + "=" * 65 + "\n📊 GECMIS PERFORMANS\n" + "=" * 65 + "\n" + accuracy_summary
-    return text
+    
+    # Parca 1: Makro ve Soklar
+    msg1 = "=" * 50 + f"\n🌍 GLOBAL STRATEJIK NOT\n" + "=" * 50 + f"\n{macro_note}\n\n"
+    if shock_alerts: 
+        msg1 += "=" * 50 + "\n⚡ ANLIK SOK UYARILARI\n" + "=" * 50 + "\n" + "\n".join(shock_alerts)
+    messages.append(msg1.strip())
+    
+    # Parca 2, 3...: Tabloyu 15 satirlik parcalara bolerek yolla (Format bozulmasin)
+    chunk_size = 15
+    for i in range(0, len(final_report_df), chunk_size):
+        df_chunk = final_report_df.iloc[i:i+chunk_size]
+        msg_df = "=" * 50 + f"\n🏛️ PORTFOY RAPORU ({rebalance_label}) - Parça {i//chunk_size + 1}\n" + "=" * 50 + "\n"
+        msg_df += df_chunk.to_string(index=False)
+        messages.append(msg_df)
+        
+    # Son Parca: Performans
+    msg_perf = "=" * 50 + "\n📊 GECMIS PERFORMANS\n" + "=" * 50 + "\n" + accuracy_summary
+    messages.append(msg_perf)
+    
+    return messages
 
 if __name__ == "__main__":
     macro_note = global_macro_intelligence()
@@ -429,10 +454,16 @@ if __name__ == "__main__":
         cols = [c for c in history_df.columns if c in HISTORY_COLUMNS or "1m" in c or "3m" in c]
         history_df[cols].to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
         
-        report_text = build_full_report(macro_note, final_report, generate_accuracy_summary(history_df), shock_alerts)
+        # Raporu mesaj listesi olarak aliyoruz
+        report_messages = build_full_report_messages(macro_note, final_report, generate_accuracy_summary(history_df), shock_alerts)
+        
+        # Ekrana basmak icin hepsini birlestiriyoruz
+        print("\n\n".join(report_messages))
+        
+        # Telegrama gondermek icin listeyi veriyoruz
+        send_telegram_message(report_messages)
         mark_rebalance_done()
     else:
         report_text = f"🌍 GUNLUK IZLEME\n{macro_note}\n\n" + ("\n".join(shock_alerts) if shock_alerts else "Sok tespit edilmedi.")
-    
-    print(report_text)
-    send_telegram_message(report_text)
+        print(report_text)
+        send_telegram_message(report_text)
