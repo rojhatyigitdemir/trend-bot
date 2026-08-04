@@ -47,8 +47,6 @@ EARLY_REVERSAL_N = 5       # 5 Adet Dipten Dönüş
 TRIM_MOMENTUM_THRESHOLD = 10.0
 REBALANCE_WEEKDAYS = {0, 4}
 LAST_REBALANCE_FILE = "last_rebalance.txt"
-SHOCK_LOOKBACK_DAYS = 3
-SHOCK_THRESHOLD_PCT = 6.0
 
 HISTORY_FILE = "signals_history.csv"
 HISTORY_COLUMNS = [
@@ -122,19 +120,80 @@ def global_macro_intelligence():
     prompt = f"You are a chief economist. Read these headlines: {macro_text}. Write a 70-word GLOBAL STRATEGIC TACTICAL NOTE."
     return secure_ai_query(prompt, is_json=False).replace('\n', ' ')
 
-def daily_shock_check(symbols, lookback_days=SHOCK_LOOKBACK_DAYS, threshold=SHOCK_THRESHOLD_PCT):
+# ====================================================================
+# --- DEFCON PROTOKOLÜ (MATEMATİK & AI ŞOK AVCISI) ---
+# ====================================================================
+def defcon_shock_monitor(symbols, macro_note):
+    print("\n🔍 DEFCON Protokolü Başlatıldı (Matematiksel ATR & Yapay Zeka Haber Analizi)...")
     alerts = []
-    for symbol in symbols:
+    news_dataset = ""
+    
+    # 1. KATMAN: MATEMATİKSEL ATR ŞOKLARI (Fiyat Kopuşları)
+    for sym in symbols:
         try:
-            hist = yf.Ticker(symbol).history(period="10d", interval="1d")
-            if hist.empty or len(hist) < lookback_days + 1: continue
-            close = hist['Close'].ffill()
-            change_pct = ((close.iloc[-1] - close.iloc[-(lookback_days + 1)]) / close.iloc[-(lookback_days + 1)]) * 100
-            if abs(change_pct) >= threshold:
-                direction = "sert dustu 🔻" if change_pct < 0 else "sert yukseldi 🔺"
-                alerts.append(f"⚠️ {symbol}: {direction} ({change_pct:+.2f}%)")
-        except Exception: continue
+            hist = yf.Ticker(sym).history(period="1mo", interval="1d")
+            if hist.empty or len(hist) < 15: continue
+            
+            # ATR (Average True Range) 14-Günlük Hesaplama
+            hist['H-L'] = hist['High'] - hist['Low']
+            hist['H-PC'] = abs(hist['High'] - hist['Close'].shift(1))
+            hist['L-PC'] = abs(hist['Low'] - hist['Close'].shift(1))
+            hist['TR'] = hist[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+            hist['ATR'] = hist['TR'].rolling(window=14).mean()
+            
+            # Son iki günün verisi
+            yesterday_atr = hist['ATR'].iloc[-2]
+            today_high = hist['High'].iloc[-1]
+            today_low = hist['Low'].iloc[-1]
+            prev_close = hist['Close'].iloc[-2]
+            
+            if pd.isna(yesterday_atr) or yesterday_atr == 0: continue
+            
+            # Yukarı veya aşağı yönlü 2.5x ATR kopuşları
+            gap_up = today_high - prev_close
+            gap_down = prev_close - today_low
+            
+            if gap_up > (2.5 * yesterday_atr):
+                alerts.append(f"📈 [MATEMATİK ŞOK] {sym}: +{(gap_up/prev_close)*100:.1f}% (2.5x ATR aşıldı) - Yukarı Yönlü Hacimli Sıçrama!")
+            elif gap_down > (2.5 * yesterday_atr):
+                alerts.append(f"📉 [MATEMATİK ŞOK] {sym}: -{(gap_down/prev_close)*100:.1f}% (2.5x ATR aşıldı) - Panik Satışı (Stop-Loss) Kırılımı!")
+
+            # 2. Katman için haberleri topla
+            news = yf.Ticker(sym).news
+            titles = [h.get('title') for h in news[:2]] if news else []
+            if titles:
+                news_text = " | ".join(titles)
+                news_dataset += f"- Varlık: {sym}, Haber: {news_text}\n"
+        except Exception:
+            continue
+
+    # 2. KATMAN: AI TEZ ÇÜRÜTME VE KATALİZÖR (NARRATIVE OVERRIDE)
+    if news_dataset:
+        prompt = f"""
+        Sen bir Acil Durum (Kriz) Yöneticisisin. Küresel durum: {macro_note}
+        Aşağıdaki varlıklara ait son dakika haberlerini oku:
+        {news_dataset}
+        
+        GÖREVİN: Bu haberlerin varlığın trendini değiştirip değiştirmeyeceğini bulmak. Her varlığı şu 3 kategoriden SADECE BİRİNE yerleştir:
+        1. "🚀 YÜKSELİŞ ŞOKU" (Oyun değiştirici, muazzam iyi haber, düşüş trendini bile kıracak katalizör)
+        2. "🚨 DÜŞÜŞ ŞOKU" (Trendi öldüren, felaket haberi, acil tahliye/stop-loss gerektiren kriz)
+        3. "⚪ GÜRÜLTÜ" (Sıradan, rutin, fiyatta yapısal kırılım yaratmayacak haber)
+        
+        KURAL: Çoğu haber "GÜRÜLTÜ"dür. Sadece gerçekten yıkıcı veya patlayıcı haberlere ŞOK etiketi ver.
+        Format zorunluluğu: SADECE JSON OBJESİ döndür. Tırnak işaretlerini (') veya (") gerekçe metni içinde ASLA kullanma.
+        Örnek format: {{"CVX": "🚀 YÜKSELİŞ ŞOKU: İran gerilimi petrol arzını tehdit ediyor, acil ralli katalizörü."}}
+        """
+        raw_json_response = secure_ai_query(prompt, is_json=True)
+        try:
+            ai_analysis = json.loads(raw_json_response)
+            for sym, analysis in ai_analysis.items():
+                if "YÜKSELİŞ ŞOKU" in analysis or "DÜŞÜŞ ŞOKU" in analysis:
+                    alerts.append(f"🧠 [AI HABER İSTİHBARATI] {sym}: {analysis}")
+        except Exception as e:
+            print(f"DEFCON AI Hatası: {e}")
+            
     return alerts
+# ====================================================================
 
 def is_rebalance_day():
     today = dt.date.today()
@@ -304,7 +363,6 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
             final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor.").replace('\n', ' ')
     except Exception as e:
         print(f"\n❌ JSON ÇÖZÜMLEME HATASI: {e}")
-        print(f"Yapay Zekanın Ürettiği Bozuk Çıktı:\n{raw_json_response}\n")
         for index, row in final_analysis_list.iterrows():
             final_analysis_list.at[index, "AI Action & Risk Warning"] = "API JSON Hatası"
 
@@ -392,27 +450,17 @@ def generate_accuracy_summary(history_df):
     return summary
 
 def send_telegram_message(messages):
-    print("\n[Telegram] Mesaj gönderimi deneniyor...")
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
         print("❌ HATA: Token veya Chat ID boş!")
         return
     url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
     
-    # Eger text listesi degilse, listeye cevir (gunluk izleme raporu icin)
-    if isinstance(messages, str):
-        messages = [messages]
+    if isinstance(messages, str): messages = [messages]
         
     for i, msg in enumerate(messages):
         try: 
-            response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-            if response.status_code == 200:
-                print(f"✅ Mesaj başarıyla iletildi. (Parça {i+1}/{len(messages)})")
-            else:
-                print(f"❌ Telegram API Hatası (Parça {i+1}): Kodu {response.status_code}, Hata: {response.text}")
-        except Exception as e: 
-            print(f"❌ İnternet / Bağlantı Hatası: {e}")
-        
-        # Telegram'in flood (spam) limitine takilmamak icin bekleyis
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        except Exception: pass
         time.sleep(1)
 
 def build_full_report_messages(macro_note, final_report_df, accuracy_summary, shock_alerts):
@@ -420,13 +468,13 @@ def build_full_report_messages(macro_note, final_report_df, accuracy_summary, sh
     today_name = "Pazartesi" if dt.date.today().weekday() == 0 else "Cuma"
     rebalance_label = f"{today_name} Rebalance" + (" (Hafta Sonu Oncesi Tasfiye)" if today_name == "Cuma" else "")
     
-    # Parca 1: Makro ve Soklar
     msg1 = "=" * 50 + f"\n🌍 GLOBAL STRATEJIK NOT\n" + "=" * 50 + f"\n{macro_note}\n\n"
     if shock_alerts: 
-        msg1 += "=" * 50 + "\n⚡ ANLIK SOK UYARILARI\n" + "=" * 50 + "\n" + "\n".join(shock_alerts)
+        msg1 += "=" * 50 + "\n🚨 DEFCON ŞOK UYARILARI 🚨\n" + "=" * 50 + "\n" + "\n".join(shock_alerts)
+    else:
+        msg1 += "✅ DEFCON: Fiyat ve Haber Şoku Tespit Edilmedi.\n"
     messages.append(msg1.strip())
     
-    # Parca 2, 3...: Tabloyu 15 satirlik parcalara bolerek yolla (Format bozulmasin)
     chunk_size = 15
     for i in range(0, len(final_report_df), chunk_size):
         df_chunk = final_report_df.iloc[i:i+chunk_size]
@@ -434,36 +482,50 @@ def build_full_report_messages(macro_note, final_report_df, accuracy_summary, sh
         msg_df += df_chunk.to_string(index=False)
         messages.append(msg_df)
         
-    # Son Parca: Performans
     msg_perf = "=" * 50 + "\n📊 GECMIS PERFORMANS\n" + "=" * 50 + "\n" + accuracy_summary
     messages.append(msg_perf)
     
     return messages
 
 if __name__ == "__main__":
-    macro_note = global_macro_intelligence()
-    shock_alerts = daily_shock_check(CORE_ASSETS)
+    try:
+        print("\n🚀 ALPHAGUARD SİSTEMİ BAŞLATILIYOR...")
+        watchlist = read_portfolio("portfolio.csv")
+        watchlist = [s for s in watchlist if s not in CORE_ASSETS] if watchlist else []
+        
+        all_monitored_symbols = list(set(CORE_ASSETS + watchlist))
 
-    if is_rebalance_day():
-        watchlist = [s for s in read_portfolio("portfolio.csv") if s not in CORE_ASSETS]
-        final_report = dual_momentum_and_risk_analysis(watchlist, macro_note)
-        pd.set_option('display.max_colwidth', None)
+        # 1. MAKRO & DEFCON ŞOK İZLEMESİ (HER GÜN ÇALIŞIR)
+        macro_note = global_macro_intelligence()
+        shock_alerts = defcon_shock_monitor(all_monitored_symbols, macro_note)
+
+        # 2. HAFTALIK REBALANCE (SADECE PZT VE CUMA)
+        if is_rebalance_day():
+            final_report = dual_momentum_and_risk_analysis(watchlist, macro_note)
+            pd.set_option('display.max_colwidth', None)
+            
+            history_df = update_realized_returns(load_signal_history())
+            history_df = append_new_signals(history_df, final_report)
+            cols = [c for c in history_df.columns if c in HISTORY_COLUMNS or "1m" in c or "3m" in c]
+            history_df[cols].to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+            
+            report_messages = build_full_report_messages(macro_note, final_report, generate_accuracy_summary(history_df), shock_alerts)
+            print("\n\n".join(report_messages))
+            send_telegram_message(report_messages)
+            mark_rebalance_done()
+        else:
+            # SADECE İZLEME (DEFCON RAPORU)
+            report_text = f"🌍 GÜNLÜK İZLEME & DEFCON\n{macro_note}\n\n" 
+            if shock_alerts:
+                report_text += "🚨 ŞOK TESPİT EDİLDİ 🚨\n" + "\n".join(shock_alerts)
+            else:
+                report_text += "✅ DEFCON: Fiyat kırılımı veya oyun değiştirici haber tespit edilmedi."
+            
+            print(report_text)
+            send_telegram_message(report_text)
+            
+        print("\n🏁 SİSTEM BAŞARIYLA TAMAMLANDI!")
         
-        history_df = update_realized_returns(load_signal_history())
-        history_df = append_new_signals(history_df, final_report)
-        cols = [c for c in history_df.columns if c in HISTORY_COLUMNS or "1m" in c or "3m" in c]
-        history_df[cols].to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
-        
-        # Raporu mesaj listesi olarak aliyoruz
-        report_messages = build_full_report_messages(macro_note, final_report, generate_accuracy_summary(history_df), shock_alerts)
-        
-        # Ekrana basmak icin hepsini birlestiriyoruz
-        print("\n\n".join(report_messages))
-        
-        # Telegrama gondermek icin listeyi veriyoruz
-        send_telegram_message(report_messages)
-        mark_rebalance_done()
-    else:
-        report_text = f"🌍 GUNLUK IZLEME\n{macro_note}\n\n" + ("\n".join(shock_alerts) if shock_alerts else "Sok tespit edilmedi.")
-        print(report_text)
-        send_telegram_message(report_text)
+    except Exception as e:
+        print(f"\n❌ FATAL ERROR (Sistem Çöktü): {e}")
+        raise e
