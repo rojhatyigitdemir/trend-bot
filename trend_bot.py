@@ -450,17 +450,27 @@ def generate_accuracy_summary(history_df):
     return summary
 
 def send_telegram_message(messages):
+    print("\n[Telegram] Mesaj gönderimi deneniyor...")
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
         print("❌ HATA: Token veya Chat ID boş!")
         return
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    if isinstance(messages, str): messages = [messages]
+    # Eğer gelen veri düz bir metinse (Günlük İzleme Raporu gibi) ve çok uzunsa, onu da güvenli parçalara böl
+    if isinstance(messages, str):
+        messages = [messages[i:i+3900] for i in range(0, len(messages), 3900)]
         
     for i, msg in enumerate(messages):
         try: 
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-        except Exception: pass
+            response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+            if response.status_code == 200:
+                print(f"✅ Mesaj başarıyla iletildi. (Parça {i+1}/{len(messages)})")
+            else:
+                print(f"❌ Telegram API Hatası (Parça {i+1}): Kodu {response.status_code}, Hata: {response.text}")
+        except Exception as e: 
+            print(f"❌ İnternet / Bağlantı Hatası: {e}")
+            
+        # Telegram'ın flood (spam) limitine takılmamak için 1 saniye bekle
         time.sleep(1)
 
 def build_full_report_messages(macro_note, final_report_df, accuracy_summary, shock_alerts):
