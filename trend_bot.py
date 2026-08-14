@@ -9,7 +9,6 @@ import time
 import os
 import datetime as dt
 import requests
-import json
 from google import genai
 from google.genai import types
 
@@ -69,16 +68,17 @@ def read_portfolio(file_name="portfolio.csv"):
         print(f"Error: Could not read {file_name}. Detail: {e}")
         return []
 
-def secure_ai_query(prompt, is_json=False, max_retries=3):
+def secure_ai_query(prompt, max_retries=3):
     if not client:
-        return "{}" if is_json else "API Key Eksik."
+        return "API Key Eksik."
 
     for attempt in range(max_retries):
         try:
-            config_args = {"temperature": 0.1} 
-            if is_json:
-                config_args["response_mime_type"] = "application/json"
-                config_args["max_output_tokens"] = 8192
+            # Format bozulmalarını engellemek için JSON dayatması tamamen kaldırıldı
+            config_args = {
+                "temperature": 0.1,
+                "max_output_tokens": 8192
+            } 
 
             response = client.models.generate_content(
                 model=MODEL_ID,
@@ -86,19 +86,11 @@ def secure_ai_query(prompt, is_json=False, max_retries=3):
                 config=types.GenerateContentConfig(**config_args)
             )
             
-            result_text = response.text.strip()
-            
-            if is_json:
-                if result_text.startswith("```json"): result_text = result_text[7:]
-                if result_text.startswith("```"): result_text = result_text[3:]
-                if result_text.endswith("```"): result_text = result_text[:-3]
-                result_text = result_text.strip()
-                
-            return result_text
+            return response.text.strip()
         except Exception as e:
             print(f"   [API Hatası] Deneme {attempt+1}: {e}")
             if attempt < max_retries - 1: time.sleep(12)
-            else: return "{}" if is_json else "AI Sunucu Hatası"
+            else: return "AI Sunucu Hatası"
 
 def global_macro_intelligence():
     macro_symbols = ["^GSPC", "CL=F", "^TNX", "BTC-USD"]
@@ -116,7 +108,7 @@ def global_macro_intelligence():
 
     if not macro_text: return "Calm trend in global markets."
     prompt = f"You are a chief economist. Read these headlines: {macro_text}. Write a 70-word GLOBAL STRATEGIC TACTICAL NOTE."
-    return secure_ai_query(prompt, is_json=False).replace('\n', ' ')
+    return secure_ai_query(prompt).replace('\n', ' ')
 
 def defcon_shock_monitor(symbols, macro_note):
     print("\n🔍 DEFCON Protokolü Başlatıldı (Matematiksel ATR & Yapay Zeka Haber Analizi)...")
@@ -158,28 +150,40 @@ def defcon_shock_monitor(symbols, macro_note):
             continue
 
     if news_dataset:
+        # JSON dayatması yerine Düz Metin (Pipe) ayrıştırması
         prompt = f"""
         Sen bir Acil Durum (Kriz) Yöneticisisin. Küresel durum: {macro_note}
         Aşağıdaki varlıklara ait son dakika haberlerini oku:
         {news_dataset}
         
-        GÖREVİN: Bu haberlerin varlığın trendini değiştirip değiştirmeyeceğini bulmak. Her varlığı şu 3 kategoriden SADECE BİRİNE yerleştir:
-        1. "🚀 YÜKSELİŞ ŞOKU" (Oyun değiştirici, muazzam iyi haber, düşüş trendini bile kıracak katalizör)
-        2. "🚨 DÜŞÜŞ ŞOKU" (Trendi öldüren, felaket haberi, acil tahliye/stop-loss gerektiren kriz)
-        3. "⚪ GÜRÜLTÜ" (Sıradan, rutin, fiyatta yapısal kırılım yaratmayacak haber)
+        GÖREVİN: Bu haberlerin varlığın trendini değiştirip değiştirmeyeceğini bulmak.
+        1. "🚀 YÜKSELİŞ ŞOKU" (Oyun değiştirici, muazzam iyi haber)
+        2. "🚨 DÜŞÜŞ ŞOKU" (Trendi öldüren felaket haberi)
+        3. "⚪ GÜRÜLTÜ" (Sıradan haber)
         
         KURAL: Çoğu haber "GÜRÜLTÜ"dür. Sadece gerçekten yıkıcı veya patlayıcı haberlere ŞOK etiketi ver.
-        Format zorunluluğu: SADECE JSON OBJESİ döndür. Tırnak işaretlerini (') veya (") gerekçe metni içinde ASLA kullanma.
-        Örnek format: {{"CVX": "🚀 YÜKSELİŞ ŞOKU: İran gerilimi petrol arzını tehdit ediyor, acil ralli katalizörü."}}
+        
+        FORMAT ZORUNLULUĞU (ÇOK ÖNEMLİ):
+        JSON KULLANMA. Her varlık için sadece ŞU FORMATTA tek bir satır yaz. Araya dik çizgi (|) koy:
+        SEMBOL | ŞOK TÜRÜ | Gerekçe Cümlesi
+        
+        Örnek Çıktı:
+        CVX | 🚀 YÜKSELİŞ ŞOKU | İran gerilimi petrol arzını tehdit ediyor, acil ralli katalizörü.
+        AAPL | ⚪ GÜRÜLTÜ | Yeni telefon sızıntıları fiyata etki etmez.
         """
-        raw_json_response = secure_ai_query(prompt, is_json=True)
+        raw_response = secure_ai_query(prompt)
         try:
-            ai_analysis = json.loads(raw_json_response)
-            for sym, analysis in ai_analysis.items():
-                if "YÜKSELİŞ ŞOKU" in analysis or "DÜŞÜŞ ŞOKU" in analysis:
-                    alerts.append(f"🧠 [AI HABER İSTİHBARATI] {sym}: {analysis}")
+            # Bulletproof Metin Ayrıştırıcısı
+            for line in raw_response.split('\n'):
+                if '|' in line:
+                    parts = line.split('|')
+                    if len(parts) >= 3:
+                        sym = parts[0].strip().replace('*', '')
+                        analysis = f"{parts[1].strip()} - {parts[2].strip()}"
+                        if "YÜKSELİŞ ŞOKU" in analysis or "DÜŞÜŞ ŞOKU" in analysis:
+                            alerts.append(f"🧠 [AI HABER İSTİHBARATI] {sym}: {analysis}")
         except Exception as e:
-            print(f"DEFCON AI Hatası: {e}")
+            print(f"DEFCON AI Ayrıştırma Hatası: {e}")
             
     return alerts
 
@@ -277,7 +281,6 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
     df = pd.DataFrame(results)
 
     if not df.empty:
-        # Sınır (Top 20) kaldırıldı. Listede ne varsa tamamı trendine göre ayrılıp raporlanacak.
         uptrend_assets = df[df["Absolute Trend"] == "UPTREND 🟢"].copy()
         uptrend_assets = uptrend_assets.sort_values(by=MOMENTUM_COL, ascending=False)
         if not uptrend_assets.empty: uptrend_assets['Category'] = 'Dynamic Uptrend'
@@ -305,7 +308,7 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
 
     final_analysis_list = pd.concat([pd.DataFrame(core_results), all_portfolio_assets], ignore_index=True)
 
-    print(f"\nStage 2: Packaging Assets for Batch JSON AI Analysis...")
+    print(f"\nStage 2: Packaging Assets for Bulletproof Text AI Analysis...")
     batch_serialized_data = ""
     for index, row in final_analysis_list.iterrows():
         symbol = row["Asset"]
@@ -317,6 +320,7 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
         except Exception: news_text = "No news."
         batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 1W Ret: {row[RETURN_1W_COL]}%, {MOMENTUM_WEEKS}W Ret: {row[MOMENTUM_COL]}%, Volume: {row['Volume Status']}, News: {news_text}\n"
 
+    # JSON YERİNE KURŞUN GEÇİRMEZ (BULLETPROOF) DÜZ METİN YAPISI
     batch_prompt = f"""
     You are an elite hedge fund manager. 
     Global context: {macro_note}
@@ -325,25 +329,35 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
     {batch_serialized_data}
 
     CRITICAL INSTRUCTIONS:
-    1. Start response for EVERY asset with ONE tag: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
-    2. Provide a max 15-word justification.
-    3. RULE for TRIM: If {MOMENTUM_WEEKS}W Ret > {TRIM_MOMENTUM_THRESHOLD}% BUT news is bad OR volume is 'Decreasing', use [TRIM 🟠].
-    4. RULE for DOWNTREND: If Category is 'Downtrend / Reversal', evaluate if Volume is 'Increasing' and 1W Ret is positive (bottom-fishing opportunity), otherwise strongly lean towards [SELL 🔴] or [HOLD 🟡].
-    5. CRITICAL: DO NOT use ANY quotation marks (' or ") inside your text.
+    1. Evaluate EVERY asset.
+    2. Choose ONE tag: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
+    3. Provide a max 15-word justification.
+    4. RULE for TRIM: If {MOMENTUM_WEEKS}W Ret > {TRIM_MOMENTUM_THRESHOLD}% BUT news is bad OR volume is 'Decreasing', use [TRIM 🟠].
+    5. RULE for DOWNTREND: If Category is 'Downtrend / Reversal', evaluate if Volume is 'Increasing' and 1W Ret is positive (bottom-fishing opportunity), otherwise strongly lean towards [SELL 🔴] or [HOLD 🟡].
     
-    Respond ONLY with a valid JSON object: {{"Symbol": "Tag Justification"}}
+    FORMAT ZORUNLULUĞU (ÇOK ÖNEMLİ):
+    DO NOT RETURN JSON. JSON KULLANMA. Return plain text in EXACTLY this format, one line per asset. Araya dik çizgi (|) koy.
+    
+    Örnek Çıktı:
+    O | [HOLD 🟡] | Dividend is safe but technicals are weak.
+    CVX | [TRIM 🟠] | Taking profits due to geopolitical risks.
     """
 
-    raw_json_response = secure_ai_query(batch_prompt, is_json=True)
+    raw_response = secure_ai_query(batch_prompt)
 
-    try:
-        analysis_dict = json.loads(raw_json_response)
-        for index, row in final_analysis_list.iterrows():
-            final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor.").replace('\n', ' ')
-    except Exception as e:
-        print(f"\n❌ JSON ÇÖZÜMLEME HATASI: {e}")
-        for index, row in final_analysis_list.iterrows():
-            final_analysis_list.at[index, "AI Action & Risk Warning"] = "API JSON Hatası"
+    # Bulletproof Ayrıştırıcı
+    analysis_dict = {}
+    for line in raw_response.split('\n'):
+        if '|' in line:
+            parts = line.split('|')
+            if len(parts) >= 3:
+                sym = parts[0].strip().replace('*', '') # AI bazen kalın yapmak için * ekler, onu temizler
+                tag = parts[1].strip()
+                justification = parts[2].strip()
+                analysis_dict[sym] = f"{tag} {justification}"
+
+    for index, row in final_analysis_list.iterrows():
+        final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor (AI Parse Issue).")
 
     df_display = final_analysis_list.drop(columns=["Volume_Num", "Volume Status"])
     return df_display
@@ -432,7 +446,7 @@ def send_telegram_message(messages):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
         print("❌ HATA: Token veya Chat ID boş!")
         return
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
     if isinstance(messages, str): messages = [messages[i:i+3900] for i in range(0, len(messages), 3900)]
         
