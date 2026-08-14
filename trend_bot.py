@@ -484,7 +484,25 @@ if __name__ == "__main__":
             pd.set_option('display.max_colwidth', None)
             
             history_df = update_realized_returns(load_signal_history())
-            history_df = append_new_signals(history_df, final_
+            history_df = append_new_signals(history_df, final_report)
+            cols = [c for c in history_df.columns if c in HISTORY_COLUMNS or "1m" in c or "3m" in c]
+            history_df[cols].to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+            
+            report_messages = build_full_report_messages(macro_note, final_report, generate_accuracy_summary(history_df), shock_alerts)
+            print("\n\n".join(report_messages))
+            send_telegram_message(report_messages)
+        else:
+            # SADECE İZLEME (Diğer günler)
+            report_text = f"🌍 GÜNLÜK İZLEME & DEFCON\n{macro_note}\n\n" 
+            if shock_alerts:
+                report_text += "🚨 ŞOK TESPİT EDİLDİ 🚨\n" + "\n".join(shock_alerts)
+            else:
+                report_text += "✅ DEFCON: Fiyat kırılımı veya oyun değiştirici haber tespit edilmedi."
+            
+            print(report_text)
+            send_telegram_message(report_text)
+            
+        print("\n🏁 SİSTEM BAŞARIYLA TAMAMLANDI!")
         
     except Exception as e:
         print(f"\n❌ FATAL ERROR (Sistem Çöktü): {e}")
