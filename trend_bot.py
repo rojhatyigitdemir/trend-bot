@@ -9,7 +9,6 @@ import time
 import os
 import datetime as dt
 import requests
-import json
 from google import genai
 from google.genai import types
 
@@ -185,9 +184,6 @@ def defcon_shock_monitor(symbols, macro_note):
             
     return alerts
 
-# ====================================================================
-# --- DOSYA KONTROLÜ KALDIRILDI - HER TETİKLENMEDE ÇALIŞIR ---
-# ====================================================================
 def is_rebalance_day():
     today = dt.date.today()
     return today.weekday() in REBALANCE_WEEKDAYS
@@ -306,51 +302,60 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
 
     final_analysis_list = pd.concat([pd.DataFrame(core_results), all_portfolio_assets], ignore_index=True)
 
-    print(f"\nStage 2: Packaging Assets for Bulletproof Text AI Analysis...")
-    batch_serialized_data = ""
-    for index, row in final_analysis_list.iterrows():
-        symbol = row["Asset"]
-        try:
-            ticker = yf.Ticker(symbol)
-            news = ticker.news
-            news_titles = [h.get('title') or (h.get('content', {}).get('title') if isinstance(h.get('content'), dict) else "") for h in news[:2]] if news else []
-            news_text = " | ".join([t for t in news_titles if t]) if news_titles else "No news."
-        except Exception: news_text = "No news."
-        batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 1W Ret: {row[RETURN_1W_COL]}%, {MOMENTUM_WEEKS}W Ret: {row[MOMENTUM_COL]}%, Volume: {row['Volume Status']}, News: {news_text}\n"
-
-    batch_prompt = f"""
-    You are an elite hedge fund manager. 
-    Global context: {macro_note}
-
-    Analyze the following {len(final_analysis_list)} assets:
-    {batch_serialized_data}
-
-    CRITICAL INSTRUCTIONS:
-    1. Evaluate EVERY asset.
-    2. Choose ONE tag: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
-    3. Provide a max 15-word justification.
-    4. RULE for TRIM: If {MOMENTUM_WEEKS}W Ret > {TRIM_MOMENTUM_THRESHOLD}% BUT news is bad OR volume is 'Decreasing', use [TRIM 🟠].
-    5. RULE for DOWNTREND: If Category is 'Downtrend / Reversal', evaluate if Volume is 'Increasing' and 1W Ret is positive (bottom-fishing opportunity), otherwise strongly lean towards [SELL 🔴] or [HOLD 🟡].
+    print(f"\nStage 2: Packaging Assets for AI Analysis (Batch Processing/Gruplama Aktif)...")
     
-    FORMAT ZORUNLULUĞU (ÇOK ÖNEMLİ):
-    DO NOT RETURN JSON. JSON KULLANMA. Return plain text in EXACTLY this format, one line per asset. Araya dik çizgi (|) koy.
-    
-    Örnek Çıktı:
-    O | [HOLD 🟡] | Dividend is safe but technicals are weak.
-    CVX | [TRIM 🟠] | Taking profits due to geopolitical risks.
-    """
-
-    raw_response = secure_ai_query(batch_prompt)
-
     analysis_dict = {}
-    for line in raw_response.split('\n'):
-        if '|' in line:
-            parts = line.split('|')
-            if len(parts) >= 3:
-                sym = parts[0].strip().replace('*', '') 
-                tag = parts[1].strip()
-                justification = parts[2].strip()
-                analysis_dict[sym] = f"{tag} {justification}"
+    BATCH_SIZE = 20 # AI tembelliğini önlemek için 20'şerli paketler
+    
+    for i in range(0, len(final_analysis_list), BATCH_SIZE):
+        chunk = final_analysis_list.iloc[i:i+BATCH_SIZE]
+        
+        batch_serialized_data = ""
+        for index, row in chunk.iterrows():
+            symbol = row["Asset"]
+            try:
+                ticker = yf.Ticker(symbol)
+                news = ticker.news
+                news_titles = [h.get('title') or (h.get('content', {}).get('title') if isinstance(h.get('content'), dict) else "") for h in news[:2]] if news else []
+                news_text = " | ".join([t for t in news_titles if t]) if news_titles else "No news."
+            except Exception: news_text = "No news."
+            batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 1W Ret: {row[RETURN_1W_COL]}%, {MOMENTUM_WEEKS}W Ret: {row[MOMENTUM_COL]}%, Volume: {row['Volume Status']}, News: {news_text}\n"
+
+        batch_prompt = f"""
+        You are an elite hedge fund manager. 
+        Global context: {macro_note}
+
+        Analyze the following {len(chunk)} assets:
+        {batch_serialized_data}
+
+        CRITICAL INSTRUCTIONS:
+        1. Evaluate EVERY SINGLE asset in the list above. DO NOT SKIP ANY.
+        2. Choose ONE tag: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
+        3. Provide a max 15-word justification.
+        4. RULE for TRIM: If {MOMENTUM_WEEKS}W Ret > {TRIM_MOMENTUM_THRESHOLD}% BUT news is bad OR volume is 'Decreasing', use [TRIM 🟠].
+        5. RULE for DOWNTREND: If Category is 'Downtrend / Reversal', evaluate if Volume is 'Increasing' and 1W Ret is positive (bottom-fishing opportunity), otherwise strongly lean towards [SELL 🔴] or [HOLD 🟡].
+        
+        FORMAT ZORUNLULUĞU:
+        DO NOT RETURN JSON. Return plain text in EXACTLY this format, one line per asset. Araya dik çizgi (|) koy.
+        
+        Örnek Çıktı:
+        O | [HOLD 🟡] | Dividend is safe but technicals are weak.
+        CVX | [TRIM 🟠] | Taking profits due to geopolitical risks.
+        """
+
+        raw_response = secure_ai_query(batch_prompt)
+
+        for line in raw_response.split('\n'):
+            if '|' in line:
+                parts = line.split('|')
+                if len(parts) >= 3:
+                    sym = parts[0].strip().replace('*', '') 
+                    tag = parts[1].strip()
+                    justification = parts[2].strip()
+                    analysis_dict[sym] = f"{tag} {justification}"
+        
+        # API limitlerine takılmamak için batch aralarında kısa bir mola
+        time.sleep(2)
 
     for index, row in final_analysis_list.iterrows():
         final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor (AI Parse Issue).")
@@ -395,7 +400,6 @@ def update_realized_returns(history_df):
         if row["symbol"] not in price_cache: price_cache[row["symbol"]] = get_latest_price(row["symbol"])
         current_price = price_cache[row["symbol"]]
         
-        # SIFIRA BÖLME (ZeroDivisionError) HATASI ÇÖZÜMÜ: entry_price kontrolü
         if current_price is None or pd.isna(entry_price) or float(entry_price) == 0.0: continue
 
         realized_return = round(((current_price - entry_price) / entry_price) * 100, 2)
@@ -515,10 +519,6 @@ if __name__ == "__main__":
             send_telegram_message(report_text)
             
         print("\n🏁 SİSTEM BAŞARIYLA TAMAMLANDI!")
-        
-    except Exception as e:
-        print(f"\n❌ FATAL ERROR (Sistem Çöktü): {e}")
-        raise e
         
     except Exception as e:
         print(f"\n❌ FATAL ERROR (Sistem Çöktü): {e}")
