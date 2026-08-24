@@ -1,4 +1,15 @@
 import sys
+import os
+import logging
+
+# YFinance ve Requests kütüphanelerinin terminale 404 hatası basmasını tamamen yasaklıyoruz
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+logging.getLogger('requests').setLevel(logging.CRITICAL)
+
+# Kalan tüm olası sızıntıları engellemek için stderr'i kapatıyoruz
+f = open(os.devnull, 'w')
+sys.stderr = f
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -7,7 +18,6 @@ import numpy as np
 import yfinance as yf
 import warnings
 import time
-import os
 import datetime as dt
 import requests
 from google import genai
@@ -30,7 +40,7 @@ else:
 MODEL_ID = 'gemini-2.5-flash'
 
 CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "ALL", "MU", "KLAC", "ZSIL.SW", "BCHE.SW"]
-ETF_LIST = ["BNDW", "ZGLD.SW", "ZSIL.SW", "VOO", "PBE", "CHDVD.SW", "XDGU.SW"] # Bilinen ETF'ler
+ETF_LIST = ["BNDW", "ZGLD.SW", "ZSIL.SW", "VOO", "PBE", "CHDVD.SW", "XDGU.SW", "SBIO.AS", "VDEA.MI", "VDEA.L", "XSPS.MI", "IWME.AS", "MSE.PA", "ACLN.SW", "VAGX.SW", "SPSN.SW", "SQN.SW", "UBSG.SW"] 
 
 # --------------------------------------------------------------------
 # Strateji Parametreleri
@@ -80,8 +90,10 @@ def secure_ai_query(prompt, max_retries=3):
             )
             return response.text.strip()
         except Exception as e:
-            if attempt < max_retries - 1: time.sleep(12)
-            else: return "AI Sunucu Hatası"
+            if attempt < max_retries - 1:
+                # Rate limit takılırsa bekleme süresini uzat
+                time.sleep(15)
+            else: return "AI Sunucu Hatası / API Limit Aşımı"
 
 def global_macro_intelligence():
     macro_symbols = ["^GSPC", "CL=F", "^TNX", "BTC-USD"]
@@ -108,7 +120,7 @@ def defcon_shock_monitor(symbols, macro_note):
         try:
             hist = yf.Ticker(sym).history(period="1mo", interval="1d")
             if hist.empty or len(hist) < 15: continue
-            hist['TR'] = hist[['High', 'Low', 'Close']].max(axis=1) - hist[['High', 'Low', 'Close']].min(axis=1) # Basitleştirilmiş ATR
+            hist['TR'] = hist[['High', 'Low', 'Close']].max(axis=1) - hist[['High', 'Low', 'Close']].min(axis=1)
             yesterday_atr = hist['TR'].rolling(window=14).mean().iloc[-2]
             today_high, today_low, prev_close = hist['High'].iloc[-1], hist['Low'].iloc[-1], hist['Close'].iloc[-2]
             
@@ -132,8 +144,9 @@ def defcon_shock_monitor(symbols, macro_note):
         Acil Durum Yöneticisisin. Makro: {macro_note}
         Haberler:
         {news_dataset}
-        Her varlığı 1 satırda yaz. Arada dik çizgi (|) olsun. Sadece yıkıcı/patlayıcı haberlere ŞOK de, gerisi GÜRÜLTÜ.
-        Format: SEMBOL | 🚀 YÜKSELİŞ ŞOKU (veya 🚨 DÜŞÜŞ ŞOKU veya ⚪ GÜRÜLTÜ) | Gerekçe
+        Sadece yıkıcı/patlayıcı haberlere ŞOK de, gerisi GÜRÜLTÜ.
+        Format (Her varlık 1 satır, arada dik çizgi |):
+        SEMBOL | 🚀 YÜKSELİŞ ŞOKU | Gerekçe
         """
         raw_response = secure_ai_query(prompt)
         try:
@@ -152,33 +165,25 @@ def is_rebalance_day():
     return dt.date.today().weekday() in REBALANCE_WEEKDAYS
 
 def get_smart_money_data(symbol):
-    """
-    VARLIK TÜRÜNE GÖRE AKILLI PARA (ALTDATA) KAZIMA MODÜLÜ
-    """
     symbol_upper = symbol.upper()
     
-    # 1. KRİPTO PARALAR İÇİN ALTDATA
     if "-USD" in symbol_upper:
         try:
-            # Alternatif API'den Korku ve Açgözlülük Endeksini (Fear & Greed) çek
             req = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
             if req.status_code == 200:
                 data = req.json()['data'][0]
                 return f"[Kripto F&G: {data['value']} ({data['value_classification']})]"
-        except Exception:
-            pass
-        return "[Kripto AltData: Hazırlanıyor]"
+        except Exception: pass
+        return "[Kripto AltData Yok]"
 
-    # 2. ETF'LER (FONLAR) İÇİN ALTDATA
-    elif symbol_upper in ETF_LIST or ".SW" in symbol_upper:
-        return "[ETF Akış Verisi: Hazırlanıyor]"
+    elif symbol_upper in ETF_LIST or ".SW" in symbol_upper or ".AS" in symbol_upper or ".MI" in symbol_upper or ".PA" in symbol_upper or ".L" in symbol_upper or ".DE" in symbol_upper:
+        return "[ETF / Fon - İçsel Veri Yok]"
 
-    # 3. HİSSE SENETLERİ İÇİN KURUMSAL ALTDATA (Opsiyon & Insider)
     else:
         opt_str, ins_str, ana_str = "N/A", "N/A", "N/A"
         try:
             t_obj = yf.Ticker(symbol)
-            # Opsiyon Put/Call
+            
             try:
                 exp = t_obj.options
                 if exp:
@@ -189,7 +194,6 @@ def get_smart_money_data(symbol):
                         opt_str = f"PCR:{p_vol/c_vol:.2f}"
             except Exception: pass
             
-            # İçeriden Öğrenenler (Insider)
             try:
                 idf = t_obj.insider_transactions
                 if idf is not None and not idf.empty:
@@ -201,7 +205,6 @@ def get_smart_money_data(symbol):
                     else: ins_str = "Ins:Nötr"
             except Exception: pass
             
-            # Analist Hedefleri
             try:
                 rec = t_obj.recommendations
                 if rec is not None and not rec.empty:
@@ -273,7 +276,6 @@ def analyze_asset_data(symbol, batch_data=None):
         except Exception:
             volume_comment = "No Data"
 
-        # ALTDATA MODÜLÜNÜ ÇAĞIR
         alt_data_str = get_smart_money_data(symbol)
 
         return {
@@ -291,6 +293,9 @@ def analyze_asset_data(symbol, batch_data=None):
 
 def dual_momentum_and_risk_analysis(symbols, macro_note):
     results = []
+    
+    # stdout'u tekrar açıyoruz
+    sys.stdout = sys.__stdout__ 
     print(f"AlphaGuard AI Initiating Rebalance...\nStage 1: Calculating Data & AltData...\n")
 
     all_symbols = list(dict.fromkeys(list(symbols) + CORE_ASSETS))
@@ -330,59 +335,73 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
 
     final_analysis_list = pd.concat([pd.DataFrame(core_results), all_portfolio_assets], ignore_index=True)
 
-    print(f"\nStage 2: AI Analysis (Batch Processing Active)...")
+    print(f"\nStage 2: AI Analysis (Bulletproof Plain Text Parser, Batch: 15)...\n")
     
     analysis_dict = {}
-    BATCH_SIZE = 20 
+    BATCH_SIZE = 15 
+    
+    # AI Çağrıları öncesi rate-limit koruması (eğer üst üste çok tetiklendiysen)
+    time.sleep(5)
     
     for i in range(0, len(final_analysis_list), BATCH_SIZE):
         chunk = final_analysis_list.iloc[i:i+BATCH_SIZE]
-        
         batch_serialized_data = ""
         for index, row in chunk.iterrows():
             symbol = row["Asset"]
             try:
+                # yfinance news çağrısındaki gereksiz printleri susturmak için ufak bir hile
+                sys.stdout = f
                 ticker = yf.Ticker(symbol)
                 news = ticker.news
+                sys.stdout = sys.__stdout__
+                
                 news_titles = [h.get('title') or "" for h in news[:2]] if news else []
                 news_text = " | ".join([t for t in news_titles if t]) if news_titles else "No news."
-            except Exception: news_text = "No news."
+            except Exception: 
+                sys.stdout = sys.__stdout__
+                news_text = "No news."
             
-            # AI'ya Smart Money (AltData) verisini de ekliyoruz!
-            batch_serialized_data += f"- Asset: {symbol}, Trend: {row['Absolute Trend']}, 1W Ret: {row[RETURN_1W_COL]}%, Vol: {row['Volume Status']}, AltData: {row['AltData (Smart Money)']}, News: {news_text}\n"
+            batch_serialized_data += f"- Asset: {symbol}, Trend: {row['Absolute Trend']}, Ret: {row[RETURN_1W_COL]}%, Vol: {row['Volume Status']}, AltData: {row['AltData (Smart Money)']}, News: {news_text}\n"
 
+        # BULLETPROOF (Dik Çizgili) METİN PARSER'A DÖNÜŞ
         batch_prompt = f"""
-        You are an elite hedge fund manager. Macro: {macro_note}
-
+        You are a hedge fund manager. Macro: {macro_note}
         Analyze these assets:
         {batch_serialized_data}
 
         INSTRUCTIONS:
         1. Evaluate EVERY asset. Use ONE tag: [STRONG BUY 🚀], [ACCUMULATE 🟢], [HOLD 🟡], [TRIM 🟠], or [SELL 🔴].
-        2. Max 15-word justification.
-        3. CRITICAL: Pay attention to the "AltData". If AltData shows Insider Selling or bad PCR, downgrade the rating. If AltData shows Crypto Fear & Greed extreme fear, it might be a buy opportunity.
+        2. Max 10-word justification.
+        3. CRITICAL: Downgrade if AltData shows 'Ins:Satış' (Insider Selling) or high PCR (>1.2). Upgrade if 'Ins:Alış'.
         
-        FORMAT:
-        SEMBOL | [TAG] | Gerekçe
+        FORMAT (MUST FOLLOW THIS EXACTLY, ONE LINE PER ASSET):
+        SEMBOL | [TAG] | Justification
+        
+        Example:
+        NVDA | [STRONG BUY 🚀] | Strong trend, safe altdata.
+        AAPL | [TRIM 🟠] | Insider selling detected.
         """
 
         raw_response = secure_ai_query(batch_prompt)
-
-        for line in raw_response.split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    sym = parts[0].strip().replace('*', '') 
-                    tag = parts[1].strip()
-                    justification = parts[2].strip()
-                    analysis_dict[sym] = f"{tag} {justification}"
         
-        time.sleep(2)
+        try:
+            for line in raw_response.split('\n'):
+                if '|' in line:
+                    parts = line.split('|')
+                    if len(parts) >= 3:
+                        sym = parts[0].strip().replace('*', '') 
+                        tag = parts[1].strip()
+                        justification = parts[2].strip()
+                        analysis_dict[sym] = f"{tag} {justification}"
+        except Exception as e:
+            print(f"Batch {i//BATCH_SIZE + 1} Parse Error: {e}")
+        
+        # Rate Limit'e (15 RPM) takılmamak için her paketten sonra 10 saniye bekle
+        time.sleep(10) 
 
     for index, row in final_analysis_list.iterrows():
-        final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor (AI Issue).")
+        final_analysis_list.at[index, "AI Action & Risk Warning"] = analysis_dict.get(row["Asset"], "Hold and monitor (Rate Limit/AI Issue).")
 
-    # Telegram'a atarken tablo kalabalık olmasın diye sadece gerekli sütunları bırakıyoruz
     df_display = final_analysis_list.drop(columns=["Volume_Num", "Volume Status"])
     return df_display
 
@@ -513,11 +532,9 @@ if __name__ == "__main__":
         
         all_monitored_symbols = list(set(CORE_ASSETS + watchlist))
 
-        # 1. MAKRO & DEFCON ŞOK İZLEMESİ (HER TETİKLENMEDE ÇALIŞIR)
         macro_note = global_macro_intelligence()
         shock_alerts = defcon_shock_monitor(all_monitored_symbols, macro_note)
 
-        # 2. REBALANCE (Pzt ve Cuma)
         if is_rebalance_day():
             final_report = dual_momentum_and_risk_analysis(watchlist, macro_note)
             pd.set_option('display.max_colwidth', None)
@@ -531,7 +548,6 @@ if __name__ == "__main__":
             print("\n\n".join(report_messages))
             send_telegram_message(report_messages)
         else:
-            # SADECE İZLEME
             report_text = f"🌍 GÜNLÜK İZLEME & DEFCON\n{macro_note}\n\n" 
             if shock_alerts:
                 report_text += "🚨 ŞOK TESPİT EDİLDİ 🚨\n" + "\n".join(shock_alerts)
