@@ -9,6 +9,7 @@ import time
 import os
 import datetime as dt
 import requests
+import json
 from google import genai
 from google.genai import types
 
@@ -74,7 +75,6 @@ def secure_ai_query(prompt, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            # Format bozulmalarını engellemek için JSON dayatması tamamen kaldırıldı
             config_args = {
                 "temperature": 0.1,
                 "max_output_tokens": 8192
@@ -150,7 +150,6 @@ def defcon_shock_monitor(symbols, macro_note):
             continue
 
     if news_dataset:
-        # JSON dayatması yerine Düz Metin (Pipe) ayrıştırması
         prompt = f"""
         Sen bir Acil Durum (Kriz) Yöneticisisin. Küresel durum: {macro_note}
         Aşağıdaki varlıklara ait son dakika haberlerini oku:
@@ -173,12 +172,11 @@ def defcon_shock_monitor(symbols, macro_note):
         """
         raw_response = secure_ai_query(prompt)
         try:
-            # Bulletproof Metin Ayrıştırıcısı
             for line in raw_response.split('\n'):
                 if '|' in line:
                     parts = line.split('|')
                     if len(parts) >= 3:
-                        sym = parts[0].strip().replace('*', '')
+                        sym = parts[0].strip().replace('*', '') 
                         analysis = f"{parts[1].strip()} - {parts[2].strip()}"
                         if "YÜKSELİŞ ŞOKU" in analysis or "DÜŞÜŞ ŞOKU" in analysis:
                             alerts.append(f"🧠 [AI HABER İSTİHBARATI] {sym}: {analysis}")
@@ -320,7 +318,6 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
         except Exception: news_text = "No news."
         batch_serialized_data += f"- Asset: {symbol}, Category: {row['Category']}, Trend: {row['Absolute Trend']}, 1W Ret: {row[RETURN_1W_COL]}%, {MOMENTUM_WEEKS}W Ret: {row[MOMENTUM_COL]}%, Volume: {row['Volume Status']}, News: {news_text}\n"
 
-    # JSON YERİNE KURŞUN GEÇİRMEZ (BULLETPROOF) DÜZ METİN YAPISI
     batch_prompt = f"""
     You are an elite hedge fund manager. 
     Global context: {macro_note}
@@ -345,13 +342,12 @@ def dual_momentum_and_risk_analysis(symbols, macro_note):
 
     raw_response = secure_ai_query(batch_prompt)
 
-    # Bulletproof Ayrıştırıcı
     analysis_dict = {}
     for line in raw_response.split('\n'):
         if '|' in line:
             parts = line.split('|')
             if len(parts) >= 3:
-                sym = parts[0].strip().replace('*', '') # AI bazen kalın yapmak için * ekler, onu temizler
+                sym = parts[0].strip().replace('*', '') 
                 tag = parts[1].strip()
                 justification = parts[2].strip()
                 analysis_dict[sym] = f"{tag} {justification}"
@@ -398,7 +394,9 @@ def update_realized_returns(history_df):
 
         if row["symbol"] not in price_cache: price_cache[row["symbol"]] = get_latest_price(row["symbol"])
         current_price = price_cache[row["symbol"]]
-        if current_price is None or pd.isna(entry_price): continue
+        
+        # SIFIRA BÖLME (ZeroDivisionError) HATASI ÇÖZÜMÜ: entry_price kontrolü
+        if current_price is None or pd.isna(entry_price) or float(entry_price) == 0.0: continue
 
         realized_return = round(((current_price - entry_price) / entry_price) * 100, 2)
         if needs_1w:
@@ -517,6 +515,10 @@ if __name__ == "__main__":
             send_telegram_message(report_text)
             
         print("\n🏁 SİSTEM BAŞARIYLA TAMAMLANDI!")
+        
+    except Exception as e:
+        print(f"\n❌ FATAL ERROR (Sistem Çöktü): {e}")
+        raise e
         
     except Exception as e:
         print(f"\n❌ FATAL ERROR (Sistem Çöktü): {e}")
