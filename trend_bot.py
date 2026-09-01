@@ -39,8 +39,12 @@ else:
 
 MODEL_ID = 'gemini-2.5-flash'
 
-CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "ALL", "MU", "KLAC", "ZSIL.SW", "BCHE.SW"]
-ETF_LIST = ["BNDW", "ZGLD.SW", "ZSIL.SW", "VOO", "PBE", "CHDVD.SW", "XDGU.SW", "SBIO.AS", "VDEA.MI", "VDEA.L", "XSPS.MI", "IWME.AS", "MSE.PA", "ACLN.SW", "VAGX.SW", "SPSN.SW", "SQN.SW", "UBSG.SW"] 
+CORE_ASSETS = ["O", "BNDW", "BTC-USD", "ZGLD.SW", "SHEL", "TSM", "ZSIL.SW", "BCHE.SW"]
+ETF_LIST = [
+    "ZSIL", "ZGLD", "CHDVD", "BCHE", "IWMO", "INFR", 
+    "MVSH", "MSE", "VUSD", "XDPU", "SBIO", "XDGU", 
+    "VDEA", "VAGX", "BNDW", "VOO", "PBE"
+]
 
 # --------------------------------------------------------------------
 # Strateji Parametreleri
@@ -167,23 +171,31 @@ def is_rebalance_day():
 def get_smart_money_data(symbol):
     symbol_upper = symbol.upper()
     
+    # Kural 1: Kripto Paralar
     if "-USD" in symbol_upper:
         try:
-            req = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
+            req = requests.get("https://api.alternative.me/fng/?limit=1", timeout=3)
             if req.status_code == 200:
                 data = req.json()['data'][0]
                 return f"[Kripto F&G: {data['value']} ({data['value_classification']})]"
         except Exception: pass
         return "[Kripto AltData Yok]"
 
-    elif symbol_upper in ETF_LIST or ".SW" in symbol_upper or ".AS" in symbol_upper or ".MI" in symbol_upper or ".PA" in symbol_upper or ".L" in symbol_upper or ".DE" in symbol_upper:
+    # --- ZEKİ UZANTI TEMİZLEYİCİ ---
+    # Gelen sembol "ZGLD.SW" ise noktadan sonrasını atar, sadece "ZGLD" kısmını alır.
+    base_symbol = symbol_upper.split('.')[0]
+
+    # Kural 2: Manuel ETF Beyaz Listesi (Whitelist)
+    if base_symbol in ETF_LIST:
         return "[ETF / Fon - İçsel Veri Yok]"
 
+    # Kural 3: Geriye Kalan Her Şey Gerçek Hisse Senedidir (Kurumsal Veri Aranır)
     else:
         opt_str, ins_str, ana_str = "N/A", "N/A", "N/A"
         try:
             t_obj = yf.Ticker(symbol)
             
+            # Opsiyon Zinciri
             try:
                 exp = t_obj.options
                 if exp:
@@ -194,10 +206,11 @@ def get_smart_money_data(symbol):
                         opt_str = f"PCR:{p_vol/c_vol:.2f}"
             except Exception: pass
             
+            # İçeriden Öğrenenler (Insider)
             try:
                 idf = t_obj.insider_transactions
                 if idf is not None and not idf.empty:
-                    txt = idf.head(10).to_string().lower()
+                    txt = idf.head(8).to_string().lower()
                     sales = txt.count('sale') + txt.count('sell')
                     buys = txt.count('purchase') + txt.count('buy')
                     if sales > buys: ins_str = "Ins:Satış"
@@ -205,6 +218,7 @@ def get_smart_money_data(symbol):
                     else: ins_str = "Ins:Nötr"
             except Exception: pass
             
+            # Analist Tavsiyeleri
             try:
                 rec = t_obj.recommendations
                 if rec is not None and not rec.empty:
